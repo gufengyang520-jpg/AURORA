@@ -1,0 +1,37 @@
+# ---- 构建产物 ----
+aurora-lsp/build/
+aurora-lsp/app/build/
+aurora-lsp/.gradle/
+aurora-lsp/.kotlin/
+aurora-lsp/out/
+aurora-lsp/local.properties
+
+# ---- 调试留档，不进仓库 ----
+aurora-lsp/*.png
+aurora-lsp/window*.xml
+aurora-lsp/audit/
+
+# ---- 中间产物与取证 ----
+_work/
+device/
+reference/
+spike/
+
+# ---- 旧路线与其它项目 ----
+aurora-pro/
+officelite/
+
+# ---- 工具缓存 ----
+.mimocode/
+.playwright-mcp/
+.hallmark/
+unslop-story/
+
+# ---- 系统与编辑器 ----
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+*.log
+# ---- ��Ŀ¼��ʱ��ͼ ----
+/*.png
