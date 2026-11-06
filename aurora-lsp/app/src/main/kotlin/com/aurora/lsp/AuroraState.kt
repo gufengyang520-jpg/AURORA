@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
@@ -48,6 +50,18 @@ class AuroraState(private val context: Context) {
     var savedCurve by mutableStateOf<FloatArray?>(null)
         private set
 
+    /** Recent engine state changes, oldest first. Shown on the diagnostics page. */
+    var engineLog by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /** Presets the user saved, newest last. */
+    var userPresets by mutableStateOf<List<UserPreset>>(emptyList())
+        private set
+
+    /** Package name to preset id. */
+    var appMap by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
     /** Gains the engine actually wrote, as reported back through aurora_backend_bands. */
     var actualBands by mutableStateOf<FloatArray?>(null)
         private set
@@ -77,8 +91,17 @@ class AuroraState(private val context: Context) {
         val geq: String?,
         val geqSaved: String?,
         val bands: String?,
+        val log: String?,
+        val userPresetsRaw: String?,
+        val appMapRaw: String?,
         val device: DeviceProfile
     )
+
+    /** A preset the user saved and named. */
+    data class UserPreset(val id: String, val name: String, val curve: FloatArray) {
+        override fun equals(other: Any?): Boolean = other is UserPreset && other.id == id
+        override fun hashCode(): Int = id.hashCode()
+    }
 
     private fun readSnapshot(): Snapshot {
         val resolver = context.contentResolver
@@ -99,6 +122,9 @@ class AuroraState(private val context: Context) {
             geq = read(AuroraEngine.K_GEQ),
             geqSaved = read(AuroraEngine.K_GEQ_SAVED),
             bands = read(AuroraEngine.R_BANDS),
+            log = read(AuroraEngine.R_LOG),
+            userPresetsRaw = read(AuroraEngine.K_USER_PRESETS),
+            appMapRaw = read(AuroraEngine.K_APP_MAP),
             device = DeviceProfile.read(resolver2)
         )
     }
@@ -117,6 +143,13 @@ class AuroraState(private val context: Context) {
         if (stored != null) preset = "custom"
         savedCurve = parseCurve(raw.geqSaved)
         actualBands = parseCurve(raw.bands)
+        engineLog = raw.log.orEmpty()
+            .let { if (it == "null") "" else it }
+            .split('\n')
+            .filter { it.isNotBlank() }
+            .takeLast(50)
+        userPresets = parsePresets(raw.userPresetsRaw)
+        appMap = parseAppMap(raw.appMapRaw)
         device = raw.device
         loaded = true
     }
@@ -187,6 +220,105 @@ class AuroraState(private val context: Context) {
         val parts = raw.split(",")
         if (parts.size != AudioEq.BANDS) return null
         return FloatArray(AudioEq.BANDS) { parts[it].trim().toIntOrNull()?.div(10f) ?: return null }
+    }
+
+    private fun parsePresets(raw: String?): List<UserPreset> {
+        if (raw.isNullOrEmpty() || raw == "null") return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val id = item.optString("id")
+                val curve = item.optJSONArray("curve") ?: return@mapNotNull null
+                if (id.isEmpty() || curve.length() != AudioEq.BANDS) return@mapNotNull null
+                UserPreset(
+                    id = id,
+                    name = item.optString("name").ifBlank { "未命名" },
+                    curve = FloatArray(AudioEq.BANDS) {
+                        (curve.optDouble(it, 0.0) / 10.0).toFloat()
+                    }
+                )
+            }
+        } catch (t: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun parseAppMap(raw: String?): Map<String, String> {
+        if (raw.isNullOrEmpty() || raw == "null") return emptyMap()
+        return try {
+            val obj = JSONObject(raw)
+            val out = mutableMapOf<String, String>()
+            obj.keys().forEach { key ->
+                val value = obj.optString(key)
+                if (value.isNotEmpty() && value != "null") out[key] = value
+            }
+            out
+        } catch (t: Throwable) {
+            emptyMap()
+        }
+    }
+
+    private fun presetsToJson(presets: List<UserPreset>): String {
+        val array = JSONArray()
+        presets.forEach { preset ->
+            array.put(JSONObject().apply {
+                put("id", preset.id)
+                put("name", preset.name)
+                put("curve", JSONArray(preset.curve.map { (it * 10).toInt() }))
+            })
+        }
+        return array.toString()
+    }
+
+    private fun appMapToJson(map: Map<String, String>): String {
+        val json = JSONObject()
+        map.forEach { (key, value) -> json.put(key, value) }
+        return json.toString()
+    }
+
+    /** Saves the given curve under a new name; the newest preset lands at the end of the list. */
+    suspend fun savePreset(name: String, curve: FloatArray) {
+        val id = "u" + System.currentTimeMillis()
+        val updated = userPresets + UserPreset(id, name.trim().ifBlank { "我的预设" }, curve)
+        commit(AuroraEngine.K_USER_PRESETS, presetsToJson(updated))
+    }
+
+    suspend fun renamePreset(id: String, name: String) {
+        val updated = userPresets.map {
+            if (it.id == id) UserPreset(it.id, name.trim().ifBlank { it.name }, it.curve) else it
+        }
+        commit(AuroraEngine.K_USER_PRESETS, presetsToJson(updated))
+    }
+
+    suspend fun deletePreset(id: String) {
+        commit(AuroraEngine.K_USER_PRESETS, presetsToJson(userPresets.filterNot { it.id == id }))
+        // Assignments pointing at the removed preset would silently fall back; clear them now.
+        val cleaned = appMap.filterNot { it.value == id }
+        if (cleaned.size != appMap.size) {
+            commit(AuroraEngine.K_APP_MAP, appMapToJson(cleaned))
+        }
+    }
+
+    suspend fun assignApp(packageName: String, presetId: String?) {
+        val updated = appMap.toMutableMap()
+        if (presetId == null) updated.remove(packageName) else updated[packageName] = presetId
+        commit(AuroraEngine.K_APP_MAP, appMapToJson(updated))
+    }
+
+    /** Writes one JSON key through su, then reloads so the UI reflects what actually landed. */
+    private suspend fun commit(key: String, json: String) {
+        val escaped = json.replace("'", "'\\''")
+        val output = withContext(Dispatchers.IO) {
+            runRoot("settings put global $key '$escaped' && echo AURORA_OK")
+        }
+        if (!output.contains("AURORA_OK")) {
+            AuroraLog.append(context, "preset", "write failed: " + output.take(160))
+            error = "保存失败。请确认已给 AURORA 授予 Root 权限。"
+            return
+        }
+        error = null
+        refresh()
     }
 
     private fun runRoot(command: String): String {

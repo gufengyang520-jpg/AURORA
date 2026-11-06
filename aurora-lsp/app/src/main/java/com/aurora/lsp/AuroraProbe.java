@@ -161,7 +161,6 @@ public final class AuroraProbe {
             StringBuilder out = new StringBuilder();
             out.append("rate=").append(audioProp(manager, AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE));
             out.append(";frames=").append(audioProp(manager, AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER));
-            out.append(";micRate=").append(audioProp(manager, AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE));
             return truncate(out.toString());
         } catch (Throwable error) {
             return "error|" + describe(error);

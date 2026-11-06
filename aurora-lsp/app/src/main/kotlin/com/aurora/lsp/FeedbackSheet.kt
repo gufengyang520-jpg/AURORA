@@ -1,5 +1,6 @@
 package com.aurora.lsp
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -50,6 +51,13 @@ private val PROBLEMS = listOf(
 )
 
 /**
+ * Below this many characters a report says nothing actionable. The button stays tappable anyway -
+ * a greyed-out button with no explanation reads as "the app is broken", which is exactly what
+ * happened to the first people who tried it.
+ */
+private const val MIN_TEXT = 4
+
+/**
  * Manual feedback, as a drawer: it rises from the bottom edge and settles, and leaves the same way.
  *
  * Not a new page — it opens over the settings screen and closes back to it, so the user never
@@ -71,6 +79,9 @@ fun FeedbackSheet(
     var problem by remember { mutableStateOf(PROBLEMS.first().second) }
     var text by remember { mutableStateOf("") }
     var withLogs by remember { mutableStateOf(true) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    val trimmed = text.trim()
+    val canSubmit = trimmed.length >= MIN_TEXT
 
     val scope = rememberCoroutineScope()
     // 0 = off screen, 1 = settled. Drives both the scrim and the drawer in one number.
@@ -88,6 +99,10 @@ fun FeedbackSheet(
             onDismiss()
         }
     }
+
+    // The drawer sits inside the app window, so the system back gesture never reached it: the only
+    // way out was the 取消 button, and a swipe back dropped the user out of the app entirely.
+    BackHandler(enabled = !submitting) { close() }
 
     val scrim = remember { MutableInteractionSource() }
 
@@ -155,7 +170,12 @@ fun FeedbackSheet(
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = text,
-                onValueChange = { if (it.length <= 600) text = it },
+                onValueChange = {
+                    if (it.length <= 600) {
+                        text = it
+                        hint = null
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 108.dp),
@@ -193,9 +213,15 @@ fun FeedbackSheet(
                 Switch(checked = withLogs, onCheckedChange = { withLogs = it })
             }
 
-            if (result != null) {
+            val message = hint ?: result
+            if (message != null) {
                 Spacer(Modifier.height(12.dp))
-                Text(result, fontSize = 12.sp, lineHeight = 18.sp, color = muted)
+                Text(
+                    message,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = if (hint != null) WarnColor else muted
+                )
             }
 
             Spacer(Modifier.height(20.dp))
@@ -217,12 +243,17 @@ fun FeedbackSheet(
                         .clip(RoundedCornerShape(12.dp))
                         .background(
                             when {
-                                submitting -> accent.copy(alpha = 0.45f)
+                                submitting || !canSubmit -> accent.copy(alpha = 0.45f)
                                 else -> accent
                             }
                         )
-                        .clickable(enabled = !submitting && text.trim().length >= 4) {
-                            onSubmit(problem, text.trim(), withLogs)
+                        .clickable(enabled = !submitting) {
+                            if (canSubmit) {
+                                hint = null
+                                onSubmit(problem, trimmed, withLogs)
+                            } else {
+                                hint = "先写一句具体是什么情况（至少 $MIN_TEXT 个字），不然看不出问题在哪。"
+                            }
                         }
                         .padding(vertical = 13.dp),
                     contentAlignment = Alignment.Center
@@ -231,7 +262,7 @@ fun FeedbackSheet(
                         if (submitting) "提交中" else "提交",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White.copy(alpha = if (text.trim().length >= 4) 1f else 0.55f)
+                        color = Color.White.copy(alpha = if (canSubmit) 1f else 0.55f)
                     )
                 }
             }

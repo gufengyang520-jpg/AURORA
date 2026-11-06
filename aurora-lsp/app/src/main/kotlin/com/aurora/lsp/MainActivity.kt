@@ -16,6 +16,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -107,8 +109,9 @@ internal val Ink = Color(0xFF1A1D22)
 internal val InkDark = Color(0xFFEEF0F3)
 internal val Muted = Color(0xFF6A7180)
 internal val MutedDark = Color(0xFFA8ADB6)
-internal val Accent = Color(0xFF2F5BD0)
-internal val AccentDark = Color(0xFF8FB4FF)
+/** Live accent: follows whichever palette the user picked in 设置 → 主题. */
+internal val Accent: Color get() = AuroraPalette.accent
+internal val AccentDark: Color get() = AuroraPalette.accentDark
 internal val OkColor = Color(0xFF2E9E63)
 internal val WarnColor = Color(0xFFB07514)
 
@@ -117,6 +120,10 @@ private fun AuroraApp() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("aurora_ui", Context.MODE_PRIVATE) }
     val ui = remember { UiPrefs(prefs) }
+    // Reads the saved palette before anything draws with the accent.
+    LaunchedEffect(Unit) {
+        AuroraPalette.apply(prefs.getString("theme_id", DEFAULT_THEME_ID))
+    }
     val systemDark = (context.resources.configuration.uiMode and
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
@@ -129,9 +136,6 @@ private fun AuroraApp() {
     val state = remember { AuroraState(context.applicationContext) }
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
-    // Held here rather than inside EqPage: the save hint has to float above the dock, which
-    // lives outside the pager.
-    var draftCurve by remember { mutableStateOf<FloatArray?>(null) }
 
     val version = remember { installedVersion(context) }
     var pendingUpdate by remember { mutableStateOf<Update.Release?>(null) }
@@ -160,11 +164,22 @@ private fun AuroraApp() {
     // The module writes a profile when it probes the device at boot. "I turned it on and nothing
     // happened" has three different causes, so each gets its own notice instead of one vague page.
     val profile = state.device
-    var noticeDismissed by remember { mutableStateOf(false) }
     var showFeedback by remember { mutableStateOf(false) }
+    var showDevice by remember { mutableStateOf(false) }
+    var showPresets by remember { mutableStateOf(false) }
+    var showThemes by remember { mutableStateOf(false) }
+    var showEditor by remember { mutableStateOf(false) }
+    var editorCreating by remember { mutableStateOf(false) }
+    // The first launch always gets the explanation once. Afterwards it only returns when a fresh
+    // boot probe says this device cannot work - that is a new fact, not a nag.
+    var showOnboarding by remember {
+        mutableStateOf(!prefs.getBoolean("onboarding_done", false))
+    }
     var feedbackSending by remember { mutableStateOf(false) }
     var feedbackResult by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(profile.probedAt) { noticeDismissed = false }
+    LaunchedEffect(profile.probedAt) {
+        if (profile.probedAt > 0L && !profile.supported) showOnboarding = true
+    }
     LaunchedEffect(profile, version.code) {
         if (profile.probed && !profile.supported) {
             Feedback.reportDevice(
@@ -199,7 +214,11 @@ private fun AuroraApp() {
     }
 
     CompositionLocalProvider(LocalAuroraDarkTheme provides dark) {
-        MiuixTheme(colors = if (dark) darkColorScheme() else lightColorScheme()) {
+        MiuixTheme(colors = if (dark) {
+                darkColorScheme(primary = AccentDark)
+            } else {
+                lightColorScheme(primary = Accent)
+            }) {
             val activity = context as? Activity
             // The window background belongs to the framework theme and does not follow the in-app
             // theme, so anything Compose does not paint (the status bar strip, the empty space
@@ -220,13 +239,12 @@ private fun AuroraApp() {
                 }
             }
             val backdrop = rememberLayerBackdrop()
-            // Cross-page jumps fade through instead of sweeping across the pages in between: the
-            // sweep drew four pages at once while the dock's glass was re-sampling, which is what
-            // made a tab jump feel like a stutter.
-            val pageFade = remember { Animatable(1f) }
+            // Cross-page jumps now sweep with the dock's droplet instead of fading through: the
+            // page and the indicator read the same scroll position, so it lands as one movement.
+            // Duration grows with distance, otherwise a three-page jump whips past faster than the
+            // eye can follow which direction it went.
             // Two taps in a row used to cancel each other mid-fade and leave the page half
             // transparent with no page switch. One jump runs at a time; the rest queue.
-            val jumpLock = remember { Mutex() }
             val pagerState = rememberPagerState(pageCount = { 4 })
             LaunchedEffect(pagerState.currentPage) { tab = pagerState.currentPage }
 
@@ -282,18 +300,19 @@ private fun AuroraApp() {
                             // Keeps all four pages composed, so jumping from the first tab to the
                             // last one no longer composes three pages mid-animation.
                             beyondViewportPageCount = 3,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { alpha = pageFade.value }
+                            modifier = Modifier.fillMaxSize()
                         ) { page ->
                             when (page) {
-                                0 -> TonePage(state, dark, scope, draftCurve != null)
+                                0 -> TonePage(state, dark, scope) { showPresets = true }
                                 1 -> EqPage(
                                     state = state,
                                     dark = dark,
                                     scope = scope,
-                                    draft = draftCurve ?: state.curve,
-                                    onDraftChange = { draftCurve = it }
+                                    onOpenAssign = { showPresets = true },
+                                    onOpenEditor = { creating ->
+                                        editorCreating = creating
+                                        showEditor = true
+                                    }
                                 )
                                 2 -> DiagPage(state, dark, scope)
                                 else -> SettingsPage(
@@ -302,6 +321,9 @@ private fun AuroraApp() {
                                     versionName = version.name,
                                     versionCode = version.code,
                                     engineVersion = profile.engineVersion,
+                                    deviceSupported = profile.supported,
+                                    onOpenDevice = { showDevice = true },
+                                    onOpenThemes = { showThemes = true },
                                     onFeedback = { showFeedback = true },
                                     checking = updateChecking,
                                     message = updateMessage,
@@ -316,41 +338,30 @@ private fun AuroraApp() {
                     selected = tab,
                     onSelect = { index ->
                         scope.launch {
-                            jumpLock.withLock {
-                                try {
-                                    val distance = kotlin.math.abs(index - pagerState.currentPage)
-                                    if (distance > 1) {
-                                        pageFade.animateTo(0f, tween(90))
-                                        pagerState.scrollToPage(index)
-                                    } else {
-                                        pagerState.animateScrollToPage(index)
-                                    }
-                                } finally {
-                                    // Always leaves the page visible, however this exits.
-                                    pageFade.snapTo(1f)
-                                }
-                            }
+                            // No queue here on purpose. A lock made the second tap wait for the
+                            // first animation to finish, which is exactly the "slow, then it
+                            // catches up by itself" behaviour. A newer tap cancels the running
+                            // scroll instead, so the page always follows the latest intent.
+                            //
+                            // tween rather than spring: a cancelled spring carries its velocity
+                            // into the next one and overshoots - the little bounce. A tween
+                            // restarts from wherever it is, so rapid taps stay smooth.
+                            val distance = kotlin.math.abs(index - pagerState.currentPage)
+                            pagerState.animateScrollToPage(
+                                index,
+                                animationSpec = tween(
+                                    durationMillis = (170 + 45 * distance).coerceAtMost(320),
+                                    easing = FastOutSlowInEasing
+                                )
+                            )
                         }
+                    },
+                    progress = {
+                        pagerState.currentPage + pagerState.currentPageOffsetFraction
                     },
                     backdrop = backdrop,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
-
-                draftCurve?.let { staged ->
-                    SaveHint(
-                        dark = dark,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 108.dp),
-                        onSave = {
-                            scope.launch {
-                                state.update(newCurve = staged)
-                                draftCurve = null
-                            }
-                        },
-                        onDiscard = { draftCurve = null }
-                    )
-                }
             }
 
             pendingUpdate?.let { release ->
@@ -368,8 +379,46 @@ private fun AuroraApp() {
                 )
             }
 
-            if (!noticeDismissed && (!profile.probed || !profile.supported)) {
-                ModuleNotice(profile = profile, dark = dark) { noticeDismissed = true }
+            if (showOnboarding) {
+                OnboardingPanel(
+                    dark = dark,
+                    profile = profile,
+                    onRecheck = { scope.launch { state.refresh() } },
+                    onOpenDevice = {
+                        showOnboarding = false
+                        prefs.edit().putBoolean("onboarding_done", true).apply()
+                        showDevice = true
+                    },
+                    onDismiss = {
+                        showOnboarding = false
+                        prefs.edit().putBoolean("onboarding_done", true).apply()
+                    }
+                )
+            }
+
+            if (showDevice) {
+                DevicePanel(dark = dark, profile = profile) { showDevice = false }
+            }
+
+            if (showPresets) {
+                PresetPanel(dark = dark, state = state, scope = scope) { showPresets = false }
+            }
+
+            if (showThemes) {
+                ThemePanel(dark = dark, onPick = { id ->
+                    prefs.edit().putString("theme_id", id).apply()
+                    AuroraPalette.apply(id)
+                }) { showThemes = false }
+            }
+
+            if (showEditor) {
+                EqEditorPanel(
+                    dark = dark,
+                    state = state,
+                    scope = scope,
+                    creating = editorCreating,
+                    initial = state.curve
+                ) { showEditor = false }
             }
 
             if (showFeedback) {
@@ -382,22 +431,33 @@ private fun AuroraApp() {
                         feedbackSending = true
                         feedbackResult = null
                         scope.launch {
-                            val ok = Feedback.reportIssue(
-                                context.applicationContext,
-                                problem,
-                                text,
-                                withLogs,
-                                profile,
-                                version.code,
-                                version.name,
-                                prefs
-                            )
-                            feedbackSending = false
-                            feedbackResult = if (ok) {
-                                AuroraLog.append(context, "feedback", problem + " sent")
-                                "已提交，谢谢。"
-                            } else {
-                                "提交失败，请检查网络后重试。"
+                            try {
+                                val sent = Feedback.reportIssue(
+                                    context.applicationContext,
+                                    problem,
+                                    text,
+                                    withLogs,
+                                    profile,
+                                    version.code,
+                                    version.name,
+                                    prefs
+                                )
+                                feedbackResult = when (sent) {
+                                    Feedback.SendResult.Sent -> {
+                                        AuroraLog.append(context, "feedback", problem + " sent")
+                                        "已提交，谢谢。"
+                                    }
+
+                                    is Feedback.SendResult.ServerError ->
+                                        "服务器拒绝了这次提交（HTTP ${sent.code}）。内容已写进本地日志，可以稍后再试，或直接把问题发到官网。"
+
+                                    is Feedback.SendResult.NetworkError ->
+                                        "连不上服务器（${sent.reason}）。检查一下网络，或把问题发到官网。"
+                                }
+                            } catch (t: Throwable) {
+                                feedbackResult = "提交时出错了（${t.javaClass.simpleName}），稍后再试。"
+                            } finally {
+                                feedbackSending = false
                             }
                         }
                     }
@@ -463,7 +523,7 @@ private fun TonePage(
     state: AuroraState,
     dark: Boolean,
     scope: kotlinx.coroutines.CoroutineScope,
-    hasUnsavedCurve: Boolean
+    onOpenPresets: () -> Unit
 ) {
     val ink = if (dark) InkDark else Ink
     val muted = if (dark) MutedDark else Muted
@@ -491,15 +551,6 @@ private fun TonePage(
                     Text("当前预设", fontSize = 12.sp, color = muted, modifier = Modifier.weight(1f))
                     Text("强度 ${state.strength}%", fontSize = 12.sp, color = muted)
                 }
-                if (hasUnsavedCurve) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "均衡页有未保存的曲线修改，那条曲线还没有生效",
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp,
-                        color = WarnColor
-                    )
-                }
                 Spacer(Modifier.height(2.dp))
                 Text(
                     Presets.NAMES[state.presetIndex],
@@ -518,6 +569,31 @@ private fun TonePage(
                 CurvePreview(state.curve, accent, muted, showScale = true)
                 Spacer(Modifier.height(4.dp))
                 BandScale(muted)
+            }
+
+            GroupLabel("按应用分配", muted)
+            SectionCard {
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenPresets() },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (state.appMap.isEmpty()) "还没有单独分配"
+                            else state.appMap.size.toString() + " 个应用使用自己的预设",
+                            fontSize = 14.sp,
+                            color = ink
+                        )
+                        Text(
+                            if (state.userPresets.isEmpty()) "也可以在这里保存并命名自己的曲线"
+                            else "已保存 " + state.userPresets.size + " 套自己的预设",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = muted
+                        )
+                    }
+                    Text("管理", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
+                }
             }
 
             GroupLabel("快速切换", muted)
@@ -574,7 +650,7 @@ private fun TonePage(
 }
 
 @Composable
-private fun CurvePreview(
+internal fun CurvePreview(
     curve: FloatArray,
     accent: Color,
     grid: Color,
@@ -614,12 +690,20 @@ private fun CurvePreview(
     }
 }
 
+/** Band label shared by every screen, so 1500 Hz never prints as "1k". */
+internal fun bandLabel(hz: Float): String {
+    if (hz < 1000f) return hz.toInt().toString()
+    val k = hz / 1000f
+    return if (k == k.toInt().toFloat()) k.toInt().toString() + "k"
+    else String.format(java.util.Locale.US, "%.1fk", k)
+}
+
 @Composable
 private fun BandScale(color: Color) {
     Row(Modifier.fillMaxWidth()) {
         AudioEq.BAND_HZ.forEach { hz ->
             Text(
-                if (hz >= 1000f) "${(hz / 1000).toInt()}k" else hz.toInt().toString(),
+                bandLabel(hz),
                 fontSize = 9.sp,
                 color = color,
                 textAlign = TextAlign.Center,
@@ -634,8 +718,8 @@ private fun EqPage(
     state: AuroraState,
     dark: Boolean,
     scope: kotlinx.coroutines.CoroutineScope,
-    draft: FloatArray,
-    onDraftChange: (FloatArray) -> Unit
+    onOpenAssign: () -> Unit,
+    onOpenEditor: (Boolean) -> Unit
 ) {
     val ink = if (dark) InkDark else Ink
     val muted = if (dark) MutedDark else Muted
@@ -647,9 +731,7 @@ private fun EqPage(
             SectionCard {
                 Presets.KEYS.indices.chunked(3).forEach { cells ->
                     Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp),
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         cells.forEach { index ->
@@ -665,35 +747,74 @@ private fun EqPage(
                         repeat(3 - cells.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
+
+                if (state.userPresets.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Box(
+                        Modifier.fillMaxWidth().height(1.dp)
+                            .background(muted.copy(alpha = 0.22f))
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("我的预设", fontSize = 12.sp, color = muted)
+                    state.userPresets.chunked(3).forEach { cells ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            cells.forEach { preset ->
+                                UserPresetCell(
+                                    preset = preset,
+                                    selected = preset.id == state.preset,
+                                    dark = dark,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    scope.launch {
+                                        state.update(newCurve = preset.curve, newPreset = "custom")
+                                    }
+                                }
+                            }
+                            repeat(3 - cells.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
+                }
+            }
+
+            GroupLabel("按应用分配 EQ", muted)
+            SectionCard {
+                EntryRow(
+                    title = if (state.appMap.isEmpty()) "还没有单独分配"
+                    else state.appMap.size.toString() + " 个应用使用自己的预设",
+                    detail = "指定之后，那个应用播放时不受全局预设影响",
+                    action = "管理",
+                    dark = dark,
+                    onClick = onOpenAssign
+                )
             }
 
             GroupLabel("自定义曲线", muted)
             SectionCard {
-                CurvePreview(draft, accent, muted)
-                Spacer(Modifier.height(6.dp))
-                AudioEq.BAND_HZ.forEachIndexed { index, hz ->
-                    BandRow(
-                        label = if (hz >= 1000) "${(hz / 1000).toInt()} kHz" else "${hz.toInt()} Hz",
-                        value = draft[index],
-                        dark = dark,
-                        onChange = { value ->
-                            onDraftChange(draft.copyOf().also { it[index] = value })
-                        }
-                    )
-                }
-                if (state.savedCurve != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "恢复我之前保存的曲线",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = accent,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { scope.launch { state.restoreSaved() } }
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
+                CurvePreview(state.curve, accent, muted, showScale = true)
+                Spacer(Modifier.height(4.dp))
+                BandScale(muted)
+                Spacer(Modifier.height(10.dp))
+                EntryRow(
+                    title = "调整这条曲线",
+                    detail = "拖动六个频段，改完立即生效",
+                    action = "编辑",
+                    dark = dark,
+                    onClick = { onOpenEditor(false) }
+                )
+            }
+
+            GroupLabel("创建新 EQ", muted)
+            SectionCard {
+                EntryRow(
+                    title = "新建一条曲线",
+                    detail = "拖完起个名字，留在「我的预设」里",
+                    action = "新建",
+                    dark = dark,
+                    onClick = { onOpenEditor(true) }
+                )
             }
 
             GroupLabel("强度", muted)
@@ -723,8 +844,82 @@ private fun EqPage(
     }
 }
 
+/** A saved curve in the preset grid, below the divider. */
 @Composable
-private fun PresetCell(
+private fun UserPresetCell(
+    preset: AuroraState.UserPreset,
+    selected: Boolean,
+    dark: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val ink = if (dark) InkDark else Ink
+    val muted = if (dark) MutedDark else Muted
+    val accent = if (dark) AccentDark else Accent
+
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                when {
+                    selected && dark -> accent.copy(alpha = 0.20f)
+                    selected -> accent.copy(alpha = 0.12f)
+                    dark -> Color(0xFF23262D)
+                    else -> Color(0xFFF4F6F9)
+                }
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp)
+    ) {
+        Text(
+            preset.name,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            color = if (selected) accent else ink,
+            maxLines = 1
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            bandSummary(preset.curve),
+            fontSize = 10.sp,
+            color = muted,
+            maxLines = 1
+        )
+    }
+}
+
+/** One tappable line that leads somewhere: an entry point, not a setting. */
+@Composable
+private fun EntryRow(
+    title: String,
+    detail: String,
+    action: String,
+    dark: Boolean,
+    onClick: () -> Unit
+) {
+    val ink = if (dark) InkDark else Ink
+    val muted = if (dark) MutedDark else Muted
+    val accent = if (dark) AccentDark else Accent
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp, color = ink)
+            Text(detail, fontSize = 11.sp, lineHeight = 16.sp, color = muted)
+        }
+        Text(action, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
+    }
+}
+
+internal fun bandSummary(curve: FloatArray): String =
+    curve.joinToString(" ") {
+        val v = Math.round(it * 10) / 10f
+        if (v > 0) "+$v" else v.toString()
+    }
+
+@Composable
+internal fun PresetCell(
     index: Int,
     selected: Boolean,
     dark: Boolean,
@@ -784,7 +979,7 @@ private fun MiniCurve(curve: FloatArray, color: Color, modifier: Modifier = Modi
     }
 }
 @Composable
-private fun BandRow(
+internal fun BandRow(
     label: String,
     value: Float,
     dark: Boolean,
@@ -891,6 +1086,32 @@ private fun DiagPage(state: AuroraState, dark: Boolean, scope: kotlinx.coroutine
                     color = ink
                 )
             }
+
+            GroupLabel("运行日志", muted)
+            SectionCard {
+                if (state.engineLog.isEmpty()) {
+                    Text(
+                        "还没有日志。播一段音频、切一次预设，这里就会出现最近 50 条状态变化。",
+                        fontSize = 12.sp,
+                        lineHeight = 19.sp,
+                        color = muted
+                    )
+                } else {
+                    Text(
+                        "最近 " + state.engineLog.size + " 条，最新的在最下面。长按可以选中复制。",
+                        fontSize = 11.sp,
+                        color = muted
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SelectionContainer {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            state.engineLog.forEach { line ->
+                                Text(line, fontSize = 11.sp, lineHeight = 16.sp, color = ink)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -915,6 +1136,9 @@ private fun SettingsPage(
     versionName: String,
     versionCode: Int,
     engineVersion: Int,
+    deviceSupported: Boolean,
+    onOpenDevice: () -> Unit,
+    onOpenThemes: () -> Unit,
     onFeedback: () -> Unit,
     checking: Boolean,
     message: String?,
@@ -937,6 +1161,17 @@ private fun SettingsPage(
                 }
             }
 
+            GroupLabel("主题", muted)
+            SectionCard {
+                EntryRow(
+                    title = "管理主题",
+                    detail = "当前：" + AuroraPalette.nameOf(AuroraPalette.currentId),
+                    action = "选择",
+                    dark = dark,
+                    onClick = onOpenThemes
+                )
+            }
+
             GroupLabel("交互", muted)
             SectionCard {
                 ToggleRow(
@@ -953,6 +1188,26 @@ private fun SettingsPage(
                     dark = dark,
                     onChange = { ui.changeAutoCheckUpdate(it) }
                 )
+            }
+
+            GroupLabel("设备", muted)
+            SectionCard {
+                Row(
+                    Modifier.clickable { onOpenDevice() },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("设备适配", fontSize = 14.sp, color = ink)
+                        Text(
+                            if (deviceSupported) "检测通过，这台机器可以正常使用"
+                            else "查看自动检测停在哪一步",
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = muted
+                        )
+                    }
+                    Text("查看", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
+                }
             }
 
             GroupLabel("更新", muted)
@@ -1068,69 +1323,6 @@ private fun ToggleRow(
     }
 }
 
-/**
- * Explains why the module cannot work here. The two cases look identical to a user but need
- * completely different actions, so they are never merged into one message.
- */
-@Composable
-private fun ModuleNotice(
-    profile: DeviceProfile,
-    dark: Boolean,
-    onDismiss: () -> Unit
-) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val scrim = remember { MutableInteractionSource() }
-    val swallow = remember { MutableInteractionSource() }
-
-    val running = profile.probed
-    val title = if (running) "此设备暂不支持" else "模块没有运行"
-    val body = if (running) {
-        "自动检测停在「" + profile.stageLabel() + "」。这台机器的音频链路和已验证的机型不一样，" +
-            "现在开启也不会有声音变化。"
-    } else {
-        "检测不到音频引擎。多半是模块没在 LSPosed 里启用，或者启用后没有重启设备。"
-    }
-    val action = if (running) {
-        "机型和链路信息已经打包发回，作者拿到后可以做适配。"
-    } else {
-        "去 LSPosed 里启用 AURORA，作用域勾选「系统」，然后重启设备。"
-    }
-
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.42f))
-            .clickable(interactionSource = scrim, indication = null) { onDismiss() },
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 28.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(if (dark) Color(0xFF1C1F24) else Color.White)
-                .clickable(interactionSource = swallow, indication = null) { }
-                .padding(20.dp)
-        ) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = ink)
-            Spacer(Modifier.height(10.dp))
-            Text(body, fontSize = 13.sp, lineHeight = 20.sp, color = muted)
-            Spacer(Modifier.height(10.dp))
-            Text(action, fontSize = 13.sp, lineHeight = 20.sp, color = muted)
-            if (running) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    profile.model + " · SDK " + profile.sdk,
-                    fontSize = 11.sp,
-                    color = muted
-                )
-            }
-            Spacer(Modifier.height(18.dp))
-            DialogAction("知道了", true, dark, Modifier.fillMaxWidth(), onDismiss)
-        }
-    }
-}
 
 @Composable
 private fun UpdateDialog(
@@ -1291,49 +1483,6 @@ private fun SectionCard(onClick: (() -> Unit)? = null, content: @Composable () -
         insideMargin = PaddingValues(16.dp)
     ) {
         Column { content() }
-    }
-}
-
-@Composable
-private fun SaveHint(
-    dark: Boolean,
-    modifier: Modifier = Modifier,
-    onSave: () -> Unit,
-    onDiscard: () -> Unit
-) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
-    Row(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp)
-            .shadow(10.dp, RoundedCornerShape(16.dp))
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (dark) Color(0xFF262B33) else Color.White)
-            .padding(start = 16.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text("曲线已修改", fontSize = 13.sp, color = ink, modifier = Modifier.weight(1f))
-        Text(
-            "还原",
-            fontSize = 13.sp,
-            color = muted,
-            modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
-                .clickable { onDiscard() }
-                .padding(horizontal = 10.dp, vertical = 8.dp)
-        )
-        Text(
-            "保存",
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color = accent,
-            modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
-                .clickable { onSave() }
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-        )
     }
 }
 

@@ -3,11 +3,19 @@ package com.aurora.lsp;
 /**
  * Listening curves in dB, one value per equalizer band.
  *
- * <p>Bands are 250 / 500 / 1k / 2k / 4k / 6.3k Hz. Measured on the target speaker, only roughly
- * 300 Hz - 6 kHz is reproduced usefully, so every curve works inside that window.
+ * <p>Bands are 80 / 200 / 500 / 1.5k / 4k / 10k Hz. Two rules shaped every curve here, and both
+ * came out of listening rather than theory:
  *
- * <p>Every preset differs from "flat" by at least 5 dB in some band and from its neighbours by at
- * least 4 dB somewhere, so switching presets is audible rather than academic.
+ * <ol>
+ *   <li><b>The muddy range stays down.</b> 150-600 Hz is where sound turns to mush on a phone
+ *       speaker. Bass weight belongs at 80 Hz, not at 250-500: piling gain on the low midrange is
+ *       what made earlier presets sound thick instead of deep.
+ *   <li><b>Neighbours stay within 6 dB.</b> A curve that jumps 10 dB between adjacent bands sounds
+ *       exaggerated on paper and broken in the ear - it is the "pulled too far" feeling.
+ * </ol>
+ *
+ * <p>Every preset except {@code natural} moves at least one band by 5 dB, so switching is audible
+ * rather than academic.
  */
 public final class Presets {
 
@@ -22,27 +30,27 @@ public final class Presets {
     public static final String[] NOTES = {
             "全部归零，等同于不叠加任何曲线。",
             "轻微抬一点厚度，几乎听不出修饰。",
-            "低频砸下去，中频往后收，厚而宽松。",
-            "中频通透、高频丝滑，器乐一件件分得开。",
-            "低频顶满，中高频全退，鼓点打到胸口。",
-            "下盘厚、极高频退，声场往外推开。",
+            "80 Hz 加重量，浑浊区让开，厚而不糊。",
+            "中高频打开，器乐一件件分得开。",
+            "低频顶满但浑浊区下压，鼓点砸下来不糊。",
+            "下盘厚、极高频收，声场往外推开。",
             "主唱贴耳，背景整体后退。",
-            "齿音与镲片全部跳出来，细节刺亮。",
-            "高频大幅收敛，小音量也不刺耳。"
+            "齿音与镲片跳出来，细节透亮。",
+            "高频收敛，小音量也不刺耳。"
     };
 
     /** dB per band, aligned with {@link AudioEq#BAND_HZ}. */
     private static final float[][] CURVES = {
-            // 250   500    1k     2k     4k    6.3k
+            // 80    200    500   1.5k   4k    10k
             {0, 0, 0, 0, 0, 0},
-            {2, 1, 0, 0, 1, 1},
-            {11, 9, -3, -6, -2, -5},
-            {4, 2, -1, 4, 10, 11},
-            {12, 12, 5, -7, -11, -12},
-            {10, 8, 2, -3, -9, -11},
-            {-10, -12, 6, 9, 4, 0},
-            {-9, -7, 1, 6, 11, 12},
-            {6, 4, 0, -7, -11, -11}
+            {2, 0, 0, 0, 1, 1},
+            {8, 2, -1, 1, 3, 2},
+            {1, 0, -1, 3, 6, 6},
+            {10, 4, -2, 2, 4, 3},
+            {8, 3, -2, 0, 3, 2},
+            {-4, -2, 1, 6, 4, 1},
+            {-3, -1, 0, 3, 7, 8},
+            {5, 0, 0, -3, -4, -5}
     };
 
     private Presets() {
@@ -57,5 +65,12 @@ public final class Presets {
     public static float[] curve(int index) {
         int safe = Math.max(0, Math.min(CURVES.length - 1, index));
         return CURVES[safe];
+    }
+
+    /** True when the key names one of the built-in presets. */
+    public static boolean isBuiltIn(String key) {
+        if (key == null) return false;
+        for (String known : KEYS) if (known.equals(key)) return true;
+        return false;
     }
 }

@@ -20,6 +20,22 @@ object Feedback {
     const val ENDPOINT = "https://lingluandf.online/feedback/device"
     const val REPORT_ENDPOINT = "https://lingluandf.online/feedback/report"
 
+    /**
+     * What actually happened, so the UI can stop blaming the network for everything.
+     *
+     * <p>A 405 from an nginx that routed the request to the site instead of the feedback service
+     * used to surface as "请检查网络" - the user's network was fine the whole time.
+     */
+    sealed interface SendResult {
+        object Sent : SendResult
+
+        /** Reached the server; it answered with an error code. */
+        data class ServerError(val code: Int) : SendResult
+
+        /** Never reached the server: DNS, TLS, timeout, socket. */
+        data class NetworkError(val reason: String) : SendResult
+    }
+
     private const val PREF_NAME = "aurora_ui"
     private const val KEY_REPORTED = "reported_profile"
     private const val KEY_ANON = "anon_id"
@@ -42,7 +58,7 @@ object Feedback {
         versionCode: Int,
         versionName: String,
         prefs: SharedPreferences
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): SendResult = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
             put("kind", problem)
             put("text", text.take(2000))
@@ -65,12 +81,13 @@ object Feedback {
             connection.setRequestProperty("User-Agent", "AURORA-Android")
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
             try {
-                connection.responseCode in 200..299
+                val code = connection.responseCode
+                if (code in 200..299) SendResult.Sent else SendResult.ServerError(code)
             } finally {
                 connection.disconnect()
             }
         } catch (t: Throwable) {
-            false
+            SendResult.NetworkError(t.javaClass.simpleName)
         }
     }
 

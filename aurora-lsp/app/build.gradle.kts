@@ -11,8 +11,8 @@ android {
         applicationId = "com.aurora.audio.lsp"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1200
-        versionName = "1.2.0"
+        versionCode = 1201
+        versionName = "1.2.1"
     }
 
     signingConfigs {

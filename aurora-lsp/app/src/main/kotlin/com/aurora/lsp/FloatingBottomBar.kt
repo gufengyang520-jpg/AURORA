@@ -97,16 +97,16 @@ private val iosIndicatorSpecular: Highlight = Highlight(
     width = 1.dp,
     alpha = 1f,
     style = BloomStroke(
-        color = Color.White.copy(alpha = 0.12f),
+        color = Color(0xFFFFC6D4).copy(alpha = 0.16f),
         innerBlurRadius = 2.0.dp,
         primaryLight = LightSource(
             position = LightPosition(0.5f, -0.3f, -0.05f),
-            color = Color.White,
+            color = Color(0xFFFFD9E3),
             intensity = 1f,
         ),
         secondaryLight = LightSource(
             position = LightPosition(0.5f, 0.8f, -0.5f),
-            color = Color.White,
+            color = Color(0xFFFFB9CC),
             intensity = 0.4f,
         ),
         dualPeak = true,
@@ -210,6 +210,13 @@ fun FloatingBottomBar(
     backdrop: Backdrop,
     tabsCount: Int,
     isBlurEnabled: Boolean = true,
+    /**
+     * When supplied, the indicator follows this value — the pager's real scroll position — instead
+     * of running its own animation. Droplet and page then occupy the same fraction on every frame,
+     * so a tab change reads as one movement rather than two animations that happen to overlap.
+     * Dragging still owns the indicator while a finger is down.
+     */
+    progressOverride: (() -> Float)? = null,
     content: @Composable RowScope.((Int) -> Unit) -> Unit
 ) {
     val isInDark = isInDarkTheme()
@@ -306,8 +313,17 @@ fun FloatingBottomBar(
     LaunchedEffect(selectedIndex) {
         if (currentIndex != selectedIndex) {
             currentIndex = selectedIndex
-            dampedDragAnimation.animateToValue(selectedIndex.toFloat())
+            if (progressOverride == null) {
+                dampedDragAnimation.animateToValue(selectedIndex.toFloat())
+            }
         }
+    }
+
+    /** Where the indicator sits right now, in tab units. */
+    fun currentProgress(): Float {
+        val override = progressOverride
+        if (override != null && dampedDragAnimation.pressProgress <= 0.001f) return override()
+        return dampedDragAnimation.value
     }
 
     fun activateTab(index: Int) {
@@ -316,7 +332,13 @@ fun FloatingBottomBar(
             currentIndex = index
             onSelectedUpdated(index)
         }
-        dampedDragAnimation.animateToValue(index.toFloat())
+        // Keep the drag machinery's target in sync even when the pager drives the indicator.
+        // Without this a fast tap leaves targetValue on the old index, and the drag-end handler
+        // yanks the selection back - the bounce felt when tapping quickly.
+        dampedDragAnimation.updateValue(index.toFloat())
+        if (progressOverride == null) {
+            dampedDragAnimation.animateToValue(index.toFloat())
+        }
     }
 
     val interactiveHighlight = remember(animationScope, tabWidthPx, dampedDragAnimation) {
@@ -324,8 +346,8 @@ fun FloatingBottomBar(
             animationScope = animationScope,
             position = { size, _ ->
                 Offset(
-                    if (isLtr) (dampedDragAnimation.value + 0.5f) * tabWidthPx + panelOffset
-                    else size.width - (dampedDragAnimation.value + 0.5f) * tabWidthPx + panelOffset,
+                    if (isLtr) (currentProgress() + 0.5f) * tabWidthPx + panelOffset
+                    else size.width - (currentProgress() + 0.5f) * tabWidthPx + panelOffset,
                     size.height / 2f
                 )
             }
@@ -442,7 +464,7 @@ fun FloatingBottomBar(
                     Modifier
                         .padding(horizontal = 4.dp)
                         .graphicsLayer {
-                            val progressOffset = dampedDragAnimation.value * tabWidthPx
+                            val progressOffset = currentProgress() * tabWidthPx
                             translationX = if (isLtr) progressOffset + panelOffset else -progressOffset + panelOffset
                         }
                         .drawBackdrop(
@@ -489,7 +511,7 @@ fun FloatingBottomBar(
                     Modifier
                         .padding(horizontal = 4.dp)
                         .graphicsLayer {
-                            val progressOffset = dampedDragAnimation.value * tabWidthPx
+                            val progressOffset = currentProgress() * tabWidthPx
                             translationX = if (isLtr) progressOffset + panelOffset else -progressOffset + panelOffset
                         }
                         .clip(pillShape)
@@ -506,7 +528,7 @@ fun FloatingBottomBar(
                                 .requiredWidth(with(density) { (totalWidthPx - 8.dp.toPx()).toDp() })
                                 .height(56.dp)
                                 .graphicsLayer {
-                                    val progressOffset = dampedDragAnimation.value * tabWidthPx
+                                    val progressOffset = currentProgress() * tabWidthPx
                                     translationX = if (isLtr) -progressOffset else progressOffset
                                 },
                             verticalAlignment = Alignment.CenterVertically,

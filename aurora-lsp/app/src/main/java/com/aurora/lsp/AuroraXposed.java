@@ -19,8 +19,8 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * Entry point. Hooks AudioService inside system_server, then drives the Dolby DAP from a private
- * background thread.
+ * Entry point. Hooks AudioService inside system_server, then drives the software equalizer from a
+ * private background thread.
  *
  * <p>The audio effect calls block in the HAL. Running them on the system_server main looper makes
  * the watchdog kill the system process, so nothing here ever touches the main thread.
@@ -29,6 +29,8 @@ public final class AuroraXposed implements IXposedHookLoadPackage {
 
     private static final String TAG = "AURORA-LSP";
     private static final long TICK_MS = 2000L;
+    /** Let a batch of setting writes land before reacting to it. */
+    private static final long SETTLE_MS = 150L;
     private static final AtomicBoolean HOOKED = new AtomicBoolean(false);
     private static final AtomicBoolean STARTED = new AtomicBoolean(false);
     private static volatile Context systemContext;
@@ -104,6 +106,11 @@ public final class AuroraXposed implements IXposedHookLoadPackage {
         thread.start();
         Handler handler = new Handler(thread.getLooper());
         engineHandler = handler;
+        if (systemContext != null) {
+            // Wires the playback callback so a new session is attached within milliseconds instead
+            // of waiting for the next poll.
+            AuroraEngine.get(systemContext).attach(handler);
+        }
         observe(systemContext, handler);
         // Probe runs on the engine thread too: it touches AudioManager, which must never block
         // the system_server main looper.
@@ -127,12 +134,16 @@ public final class AuroraXposed implements IXposedHookLoadPackage {
                     Handler target = engineHandler;
                     if (target == null) return;
                     target.removeCallbacks(TICK);
-                    target.post(TICK);
+                    // One save writes several keys in a row. Reacting to each write pushed a
+                    // string of half-applied curves into the effect, which is audible as a short
+                    // warble right after a preset change. Wait for the batch instead.
+                    target.postDelayed(TICK, SETTLE_MS);
                 }
             };
             String[] keys = {
                     AuroraEngine.K_ENABLED, AuroraEngine.K_PANIC, AuroraEngine.K_PRESET,
-                    AuroraEngine.K_STRENGTH, AuroraEngine.K_GEQ, AuroraEngine.K_SELFTEST
+                    AuroraEngine.K_STRENGTH, AuroraEngine.K_GEQ, AuroraEngine.K_SELFTEST,
+                    AuroraEngine.K_USER_PRESETS, AuroraEngine.K_APP_MAP
             };
             for (String key : keys) {
                 resolver.registerContentObserver(Settings.Global.getUriFor(key), false, observer);

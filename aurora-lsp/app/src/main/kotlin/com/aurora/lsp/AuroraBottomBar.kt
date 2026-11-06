@@ -27,7 +27,8 @@ fun AuroraBottomBar(
     selected: Int,
     onSelect: (Int) -> Unit,
     backdrop: Backdrop,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    progress: (() -> Float)? = null
 ) {
     val entries = listOf(
         NavEntry("音效", MiuixIcons.VolumeUp),
@@ -44,7 +45,8 @@ fun AuroraBottomBar(
         onSelected = onSelect,
         backdrop = backdrop,
         tabsCount = entries.size,
-        isBlurEnabled = true
+        isBlurEnabled = true,
+        progressOverride = progress
     ) { activateTab ->
         entries.forEachIndexed { index, entry ->
             FloatingBottomBarItem(

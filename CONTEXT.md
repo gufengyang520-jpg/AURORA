@@ -1,183 +1,231 @@
 # 音频模块（AURORA）· CONTEXT
 
-一句话摘要：这是一个绕过系统均衡器、直接用 LSPosed 在 `system_server` 里以 AudioEffect 通道驱动高通/杜比 DAX3 `dap_hw` 效果器的 20 段 GEQ 叠加项目，v1.5.0 已在真机听感确认，旧路线 `aurora-pro`（改 Dolby XML + props）已归档。
+一句话摘要：这是一个用 LSPosed 注入 `system_server`、按**正在播放的音频会话**逐个挂载 `DynamicsProcessing` 软件均衡器、在音轨末端叠加六段曲线的 Android 调音模块；当前版本 **1.2.1**（`versionCode 1201`），仓库 `shisjsji/AURORA`，1.2.0 已推到 `994e5be`，1.2.1 本地待发布。
 
-元信息：本地静态阅读整理（只读 `C:\Users\lldf\XiaomiMiMoProjects\音频模块`），未连真机、未跑构建、未 ADB；结论全部来自仓库内文本，运行时行为以仓库既有记录为准。
+> **本文件已于 2026-11-06 按 1.2.0 重写。** 旧版描述的「Dolby DAX3 `dap_hw` + 20 段 GEQ + AudioEffect 厂商参数通道」路线**已整体废弃**，对应代码 `DolbyDap.java` 已删除。若在别处读到 v1.5.0、20 段、`aurora_geq` 之外还带 profile 的说法，一律以本文件为准。
+
+元信息：本次重写只读本地仓库（代码、构建配置、产物时间戳）加知识库 `aurora` 项目记忆，未连真机、未跑构建、未 ADB。所有结论都能在「相关文件路径」一节点到具体文件。
 
 ## 1. 目标
 
-把手机听感变成一个可编程的东西：不动原厂 `/odm` 配置、不重启 `audioserver`、不换系统文件，只在播放链路末端叠加一条自己可控的 20 段曲线（外加环绕/对白/虚拟低音等开关），关掉即回原厂。
+把手机听感变成可编程的东西：不动原厂 `/odm` 配置、不重启 `audioserver`、不替换系统文件，只在每条播放链路的末端叠加一条自己可控的曲线，关掉即回原厂。
 
-- 目标设备与基线：Xiaomi 17 Pro（`pandora`），固件 `OS4.0.5.0.XBLCNXM`，音频平台 Qualcomm `sku_canoe`，调音引擎 Dolby DAX3 / DAP MOBILE v2.7（证据：README.md — "机型 | Xiaomi 17 Pro（codename `pandora`）"、"调音引擎 | Dolby DAX3 / DAP MOBILE v2.7"）。
-- 关键能力来源：Dolby 以标准 AudioEffect 注册，名字 `dap_hw`、UUID `9d4921da-8225-4f29-aefa-39537a04bcaa`，**任何有音频权限的进程都能创建并下发厂商参数**（证据：docs/固件逆向报告-OS4.0.5.0.md — "Dolby 是以标准 AudioEffect 注册的，名字 `dap_hw`，UUID `9d4921da-8225-4f29-aefa-39537a04bcaa`。**任何有音频权限的进程都能创建它并下发厂商参数**"）。
-- 频段与量纲：20 段，47 Hz – 19.7 kHz，1 单位 = 1/16 dB（证据：docs/固件逆向报告-OS4.0.5.0.md — "Dolby 内置 **20 段图形均衡器（GEQ）**，频点 47 Hz – 19.7 kHz，增益单位 **1/16 dB**"）。
-- 明确不碰的东西：`/odm/etc/dolby/*.xml`、`persist.vendor.audio.*` 属性、`audioserver` 进程（证据：README.md — "**不碰的东西**：`/odm/etc/dolby/*.xml`、`persist.vendor.audio.*` 属性、`audioserver` 进程"）。
+- 目标设备与基线：Xiaomi 17 Pro（`pandora` / `25098PN5AC`），澎湃 OS 4.0（Android 17），固件 `OS4.0.6.0.XBLCNXM`（证据：README.md — "只在小米 17 Pro（`pandora` / `25098PN5AC`，澎湃 OS 4.0，Android 17）上验证过"）。
+- 频段与量纲：**六段**，250 / 500 / 1000 / 2000 / 4000 / 6300 Hz，dB 直接量纲，单段限幅 ±12 dB（证据：AudioEq.java — `BAND_HZ = {250f, 500f, 1000f, 2000f, 4000f, 6300f}`、`MAX_DB = 12f`）。
+- 频段为什么只有六段：手机扬声器只在约 300 Hz–6 kHz 有效还原，往 47 Hz 或 12 kHz 堆增益曲线好看但听不出来（证据：README.md — "只做 250 Hz 到 6.3 kHz 这六段，是因为实测手机扬声器只在这段里能有效还原"）。
+- 明确不碰的东西：`/odm/etc/dolby/*.xml`、`persist.vendor.audio.*` 属性、`audioserver` 进程、任何系统文件（证据：README.md — "不写 `/odm` 里的 Dolby 配置，不重启 `audioserver`，不替换任何系统文件"）。
 
-### 分层结构
+### 为什么不是 Dolby DAP
+
+这台机器的固件里 `dap_hw`（UUID `9d4921da-8225-4f29-aefa-39537a04bcaa`）确实接受厂商参数、写入返回 `rc=0`、效果器在链上、框架里 `Enabled=y`——但音乐完全没变化。它是**控制面，不处理 PCM**；流媒体播放器走 spatializer 输出线程时，参数写了不生效。真正处理 PCM 的是 AOSP 的 `android.media.audiofx.DynamicsProcessing`，工作起来在普通路径和 spatializer 路径上都能出声（证据：AudioEq.java 类注释 — "the `dap_hw` effect accepts vendor parameters but does not apply them to audio that goes through the spatializer output thread"）。
+
+## 2. 架构
+
+### 分层
 
 | 层 | 目录/文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| Java 注入层 | `aurora-lsp/`（5 个 Java 文件 + `build.sh`） | Hook `AudioService.systemReady`，在独立线程按播放会话挂 Dolby 效果器、写 20 段曲线，并给 UI 写回执 | 主线，v1.5.0 可用 |
-| Magisk 层 | `aurora-pro/`（shell + WebUI） | 改 Dolby XML（bind mount）+ 写 4 个 `persist.*` 属性 + 必要时 `ctl.restart audioserver` | 旧路线，README 标注"已归档" |
-| 配置层 | `aurora-lsp/.../Presets.java`、`aurora-pro/device/data/runtime/dax-default.xml`、`_work/assets/odm_etc_audio/audio_effects_config.json` | 曲线数据、9 profile / 7 tuning 定义、音量档位与 app→profile 映射 | 部分只读引用 |
-| 调试归档 | `device/`（dumpsys、props、日志、db） | 真机抓取取证：效果器注册、spatializer 开关史、模块配置快照 | 只作证据 |
+| 注入层 | `aurora-lsp/.../AuroraXposed.java` | Hook `AudioService.systemReady()`，起 `aurora-engine` 线程，注册配置观察者，跑一次 Probe | 主线 |
+| 引擎层 | `AuroraEngine.java` | 每 2 秒一次 tick：读配置 → 扫会话 → 算曲线 → 按会话写入 → 写回执 | 主线 |
+| 效果器层 | `AudioEq.java` | `DynamicsProcessing` 反射封装，一个会话一个实例 | 主线 |
+| 曲线数据 | `Presets.java` | 9 套 × 6 段 dB 曲线 + key/名称/听感说明 | 主线 |
+| 自检层 | `AuroraProbe.java` | 开机在 system_server 里探一遍链路，结论写 `Settings.Global` | 主线 |
+| UI 层 | `MainActivity.kt` + 16 个 Kotlin 文件 | Compose + MIUIX 四页 + 实时状态条 | 主线 |
+| 旧路线 | `aurora-pro/` | Magisk/KernelSU + Dolby XML 脚本，v5.7.3 | 已归档，被 `.gitignore` 排除 |
 
-`officelite/` 是另一个独立项目（Office 复刻），与本项目无关，另有负责人。
+`officelite/`（Office 复刻）是另一个独立项目，与本项目无关。
 
-## 2. 已完成
+### 音频链路
 
-**注入链已跑通**：入口由 `xposed_init` 指定，模块只在 `pkg == "android"` 时动手，hook 的是 `com.android.server.audio.AudioService.systemReady()`（无参重载）的 after 钩子。
+```
+App 会话  ──▶  系统混音  ──▶  AURORA（DynamicsProcessing preEq）  ──▶  扬声器
+ session        AudioFlinger        六段 250 Hz – 6.3 kHz
+```
 
-- 入口类：`com.aurora.lsp.AuroraXposed`（证据：aurora-lsp/app/src/main/assets/xposed_init — "com.aurora.lsp.AuroraXposed"）。
-- 模块声明：包名 `com.aurora.audio.lsp`，`xposedmodule=true`，`xposedminversion=93`，作用域走 `@array/xposed_scope`（证据：aurora-lsp/app/src/main/AndroidManifest.xml — "`<meta-data android:name="xposedmodule" android:value="true" />`"、"`<meta-data android:name="xposedminversion" android:value="93" />`"）。
-- 只处理 system_server：`if (!"android".equals(params.packageName)) return;`（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/AuroraXposed.java — "if (!\"android\".equals(params.packageName)) return;"）。
-- Hook 点：遍历 `AudioService` 声明方法找名字为 `systemReady` 且无参的那个，`XposedBridge.hookMethod` 后 `attach(param.thisObject)`；找不到会回退 `HOOKED=false` 并记日志（证据：同上 — "if (!\"systemReady\".equals(method.getName()) || method.getParameterTypes().length != 0)"、"AudioService hook failed: "）。
-- 拿 Context：不是自己 new，而是从 `AudioService` 实例反射取 `mContext` 字段（证据：同上 — "Object value = XposedHelpers.getObjectField(audioService, \"mContext\");"）。
+关键点：**挂的是会话，不是音频设备**。系统一开空间音频，音乐就换到独立输出线程（`AudioOut_5D`，SPATIALIZER），全局混音上的任何改动都会被绕过；按会话挂才两边都有效。
 
-**线程模型已固化**：绝不在主 Looper 上做音频调用。
+### 一次 tick 的流程
 
-- 引擎线程：`new HandlerThread("aurora-engine", Process.THREAD_PRIORITY_BACKGROUND)`，所有 tick 都 post 到它（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/AuroraXposed.java — "HandlerThread thread = new HandlerThread(\"aurora-engine\", " + 换行 + "Process.THREAD_PRIORITY_BACKGROUND);"（源码实际分两行书写，此处以 + 表示换行））。
-- 轮询：`TICK_MS = 2000L`，tick 完再 `postDelayed(this, TICK_MS)`（证据：同上 — "private static final long TICK_MS = 2000L;"）。
-- 配置变更即时触发：对 15 个 `aurora_*` 键注册 `ContentObserver`，`onChange` 里 `removeCallbacks(TICK)` 后立即 `post`，等效一次即时 tick（证据：同上 — "target.removeCallbacks(TICK); target.post(TICK);"）。
-- 双开关防重入：`HOOKED` 与 `STARTED` 两个 `AtomicBoolean` 各自 CAS，避免重复 hook / 重复起线程（证据：同上 — "if (!STARTED.compareAndSet(false, true)) return;"）。
+`AuroraEngine.tick()` 是唯一入口，全程跑在 `aurora-engine` 线程：
 
-**会话发现与挂载链路已打通**：`AuroraEngine.tick()` 是唯一入口，流程是「读配置 → 判 panic/enabled → 扫活跃会话 → 算曲线 → 按会话写入 → 回执」。
+1. `read()` 读 `Settings.Global` 里的六个键。读失败时**保留上次的配置**（`lastGood`），不当作"已关闭"。
+2. `panic` → `releaseAll()` 并回执 `panic`；`!enabled` → `releaseAll()` 并回执 `disabled`。
+3. `activeSessions()` 反射 `AudioManager.getActivePlaybackConfigurations()`，只收 `getPlayerState() == 2`（STARTED）且 `0 < session <= 1_000_000` 的。
+4. 会话为空 → `releaseAll()` 并回执 `idle`。
+5. 算曲线：自检激活就全段 −12 dB，否则 `buildGains(config)`。
+6. 逐会话：**第一次看到某会话只登记进 `seen`，下一次 tick 才 `open()`**。每个会话只创建一次效果器：既能避开 MiSound 在音轨起始时重建效果链导致的孤悬，又不会像旧实现那样"建→拆→建"，把链拆掉一次（那正是换歌、刷视频、切沉浸声时的断音）。签名相同且已 applied 且不在自检中则跳过重写。
+7. `releaseStale()` 回收已消失的会话，`report()` 写回执。
+8. `AuroraXposed` 在 tick 末尾 `postDelayed(this, TICK_MS)`，`TICK_MS = 2000L`。
 
-- 会话来源：反射 `AudioManager.getActivePlaybackConfigurations()`，再用 `AudioPlaybackConfiguration.getSessionId()` / `getPlayerState()` 取字段，只收 `state == 2`（STARTED）且 `0 < session <= 1_000_000` 的（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/AuroraEngine.java — "Class<?> managerClass = Class.forName(\"android.media.AudioManager\");"、"private static final int PLAYER_STATE_STARTED = 2;"、"if (session <= 0 || session > 1_000_000) continue;"）。
-- 每会话一个效果器：`effects` 是 `Map<Integer, DolbyDap>`，上限 `MAX_SESSIONS = 8`（证据：同上 — "private static final int MAX_SESSIONS = 8;"、"private final Map<Integer, DolbyDap> effects = new HashMap<>();"）。
-- 效果器创建：`AudioEffect(EFFECT_TYPE_NULL 的 UUID, dap_hw 的 UUID, 0, audioSession)`，用反射拿 4 参构造器并 `setAccessible(true)`（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/DolbyDap.java — "constructor = cls.getDeclaredConstructor(UUID.class, UUID.class, int.class, int.class);"、"effect = constructor.newInstance(UUID_TYPE_NULL, UUID_EFFECT, 0, audioSession);"）。
-- 打开判定：创建后必须 `hasControl()` 为真才算 open 成功（证据：同上 — "return Boolean.TRUE.equals(hasControlMethod.invoke(effect));"）。
-- 必须先显式开总闸：open 成功后先 `setEnabledFlag(true)`，下发 `CMD_ENABLE`=`0x00000000` 的 `{CMD_ENABLE, 1, 1}`，否则写入无声效（证据：同上 — "return write(new int[]{CMD_ENABLE, 1, enabled ? 1 : 0}) >= 0;"）。
-- 写曲线：对 `profile 0..8` 每个都写 `106(geon)=[1]` 和 `110(gebg)=gains`，共 18 次 `setParameter`（证据：AuroraEngine.java — "for (int profile = 0; profile < PROFILE_COUNT; profile++) { ok &= dap.setParam(profile, DolbyDap.P_GEQ_ENABLE, new int[]{1}); ok &= dap.setParam(profile, DolbyDap.P_GEQ_GAINS, gains); }"）。
-- profile 数量写死 9：读接口不可用，`PROFILE_COUNT` 是常量而非读值（证据：同上 — "Firmware defines nine profiles; reads are unsupported on this build, so this is fixed."）。
-- 幂等：`desiredSignature(...)` 把曲线+场景拼成字符串，与上次 `markApplied` 的签名相同就跳过重写；回执本身也用 signature 去重（证据：同上 — "if (dap.isApplied() && desired.equals(dap.signature()))"、"if (signature.equals(lastSignature)) return;"）。
-- 会话结束释放：`releaseStale(sessions)` 遍历 `effects` 找不在活跃集合里的 session，`close()` → `release()`，音频回原厂链路（证据：同上 — "releaseAll(); / dap.close();" 与 DolbyDap.java — "releaseMethod.invoke(effect);"）。
+### 曲线怎么算
 
-**`DolbyDap` 把厂商协议封装齐了**：参数通道 `setParameter(5, …)`，包体是小端 int32 数组 `[命令][数量][profile][参数 ID][值…]`。
+`buildGains()` 三步，顺序不能换（证据：AuroraEngine.java — `buildGains`）：
 
-- 命令码：`CMD_PARAM=0x01000000`、`CMD_ENABLE=0x00000000`、`CMD_PROFILE_COUNT=0x03000000`、`CMD_PROFILE=0x0A000000`、`CMD_CAPABILITY=0x0D000000`，通道固定 `CHANNEL = 5`（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/DolbyDap.java — "private static final int CMD_PARAM = 0x01000000;"、"private static final int CHANNEL = 5;"）。
-- 参数 ID 与 4CC 一一对应，101–116 全套常量都在（证据：同上 — "public static final int P_GEQ_ENABLE = 106;"、"public static final int P_GEQ_GAINS = 110;"）。
-- 编码：手写小端 `byte[]`，不依赖 ByteBuffer（证据：同上 — "out[offset] = (byte) value; out[offset + 1] = (byte) (value >>> 8);"）。
-- 读能力保留但明确标记"尽力而为"：`readBandGains()` 注释为 best-effort，注释直接写"returns null when the firmware refuses"（证据：同上 — "/** Best-effort read of the live band gains; returns null when the firmware refuses. */"）。
+1. 取基准：有用户自定义曲线用用户的，否则 `Presets.curve(indexOf(preset))`。
+2. 乘强度（`strength / 100`），再把整条曲线**按最大绝对值等比缩放进 ±12 dB**。
+3. 预衰减：若抬得最高的那段超过 `MAX_BOOST_DB = 6 dB`，整条曲线整体下移，使峰值刚好 6 dB。形状保住，只降绝对电平——这是硬件 EQ 为不削顶常做的交换。
 
-**`Presets` 提供 9 套 20 段曲线**：`KEYS`/`NAMES`/`NOTES` 三组元数据 + `CURVES` 二维 float dB 数组，列序与 `DolbyDap.BAND_HZ` 严格对齐。
+**不做减均值归一化**。早期版本减均值以求响度平直，结果把每套预设赖以成立的倾斜抹平了，九套听起来一样（证据：AuroraEngine.java — "an earlier version subtracted the mean to keep loudness flat, but that flattened exactly the tilt each preset is built around"）。
 
-- 曲线定义位置与形状：`private static final float[][] CURVES`，每行 20 个 float，共 9 行（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/Presets.java — 表头注释 "// 47  141  234  328  469  656  844 1031 1313 1688 2250 3000 3750 4688 5813 7125 9000 11250 13875 19688"）。
-- 已按听感结论重调：注释明说只在 300 Hz–6 kHz 内做文章（证据：同上 — "only roughly 300 Hz - 6 kHz is reproduced usefully"）；"低频推动"落在 328–844 Hz 而不是 47 Hz（证据：同上 — "在 328–844Hz 做推动，鼓点更实（不是堆 47Hz）"）。
-- 归一化在引擎里做：曲线先乘强度再统一减算术均值，最后 `×16` 并限幅 ±12 dB（证据：AuroraEngine.java — "int value = Math.round((scaled[i] - mean) * DolbyDap.UNIT_PER_DB);"、"int limit = MAX_BAND_DB * DolbyDap.UNIT_PER_DB;"）。
+## 3. 已完成
 
-**UI 与自检/急停可用**：`MainActivity` 四页「音效 / 均衡 / 场景 / 诊断」（证据：aurora-lsp/app/src/main/java/com/aurora/lsp/MainActivity.java — "tabTone = navItem(\"音效\", v -> showTab(TAB_TONE));"、"tabDiag = navItem(\"诊断\", v -> showTab(TAB_DIAG));"）。
+**注入链**：入口由 `assets/xposed_init` 指定为 `com.aurora.lsp.AuroraXposed`；模块只在 `pkg == "android"` 时动手，hook `AudioService` 上名为 `systemReady` 且无参的重载，钩子内 `attach(param.thisObject)`；找不到方法就回 `HOOKED=false` 并记日志。Context 是从 `AudioService` 实例反射取 `mContext` 字段，不自己 new。作用域 `res/values/arrays.xml` 只含一项 `android`（证据：AuroraXposed.java — `if (!"android".equals(params.packageName)) return;`、`XposedHelpers.getObjectField(audioService, "mContext")`）。
 
-- App 写配置走 root：`ProcessBuilder("su", "-c", command)`，即 `settings put global …` 由 su 执行（证据：同上 — "process = new ProcessBuilder(\"su\", \"-c\", command).redirectErrorStream(true).start();"）。
-- 自检：写 `aurora_selftest` 递增 token → 引擎全频 −12 dB 持续 6 s 后自动回原曲线（证据：AuroraEngine.java — "selftestUntil = android.os.SystemClock.elapsedRealtime() + 6000L;"、Presets/Main 侧注释 "自检中：全频段 -12 dB，6 秒后自动恢复。"）。
-- 急停：`aurora_panic=1` → `releaseAll()` 并回执 "panic"（证据：AuroraEngine.java — "if (config.panic) { releaseAll(); report(\"panic\""）。
+**线程模型**：`HandlerThread("aurora-engine", Process.THREAD_PRIORITY_BACKGROUND)`，tick、Probe、ContentObserver 回调全部 post 到这个线程的 Handler 上。`HOOKED` / `STARTED` 两个 `AtomicBoolean` 各自 CAS 防重入（证据：AuroraXposed.java — 类注释 "The audio effect calls block in the HAL. Running them on the system_server main looper makes the watchdog kill the system process, so nothing here ever touches the main thread."）。
 
-**旧路线 `aurora-pro` 也留有完整实现**（虽已归档）：`module.prop` v5.7.3、Magisk/KernelSU 四段脚本 + WebUI + 运行时 XML 补丁。
+**配置通道**：App 与 system_server 不共享进程，靠 `Settings.Global` 全局键通信，`ContentObserver` 监听六个键，`onChange` 里 `removeCallbacks(TICK)` 后立即 `post(TICK)`，等效一次即时 tick。
 
-- 三段时序分工：`post-fs-data.sh` 与 `post-mount.sh` 都调 `aurora_bind_early` 做"尽早绑定"，`service.sh` 等 `sys.boot_completed=1` 再 `sleep 3` 后调 `aurora_apply_all` 做完整应用（证据：aurora-pro/device/service.sh — "until [ \"$(getprop sys.boot_completed 2>/dev/null)\" = \"1\" ]; do sleep 2; done"、"aurora_apply_all \"$MODDIR/aurora.conf\" service"）。
-- 并发用 mkdir 锁：`mkdir "$LOCK"` 成功才算拿到锁，失败则查 `pid` 判活并回收陈旧锁（证据：aurora-pro/device/post-fs-data.sh — "if mkdir \"$LOCK\" 2>/dev/null; then"、service.sh — "service: recovered stale apply lock"）。
-- XML 来源：不打包静态 XML，首启复制设备自己的 `/odm` 再补丁（证据：aurora-pro/device/customize.sh — "The package contains no static Dolby XML: the runtime copies the device's own /odm XML on first boot and patches that copy."）。
-- props 注入 4 个：`persist.vendor.audio.effectimplenter=dolby`、`persist.vendor.audio.misound.disable=true`、`persist.audio.effect.device_map=speaker:dolby,earpiece:dolby`、`persist.audio.dolby.profile=<id>`，写前快照、可回滚（证据：aurora-pro/device/aurora_core.sh — "aurora_set_prop persist.vendor.audio.effectimplenter dolby"、"aurora_set_prop persist.vendor.audio.misound.disable true"）。
-- `system.prop` 故意留空：属性全部运行时写，先快照 OEM 值便于安全模式/卸载恢复（证据：aurora-pro/device/system.prop — "keeps audio properties runtime-only so their OEM values can be snapshotted before activation"）。
+- 输入键：`aurora_enabled`、`aurora_panic`、`aurora_preset`、`aurora_strength`（0–100）、`aurora_geq`（当前曲线）、`aurora_geq_saved`（用户自存曲线，切预设不丢）、`aurora_selftest`（token）。
+- 回执键：`aurora_backend_state`、`_message`、`_bands`、`_sessions`、`_applied`、`_updated`，另有 `aurora_backend_log`（最近 30 条状态变更，供反馈表单随件带走）和 `aurora_engine_version`（system_server 里那份代码的 versionCode）。
+- 量纲：曲线在 `Settings` 里按**十分之一 dB 的整数**存取（`aurora_geq = "110,90,-30,..."`），避免浮点在字符串往返中失真；回执 `_bands` 同样是十分之一 dB（证据：AuroraEngine.java — `parseCurve` 与 `join(float[])`）。
 
-**取证归档已成型**：`device/` 里能对上关键运行时事实。
+**`AudioEq` 的反射封装**：`resolve()` 一次性拿齐 `DynamicsProcessing`、`DynamicsProcessing$EqBand` 的构造器与 `setPreEqBandAllChannelsTo` / `setEnabled` / `hasControl` / `release`，失败缓存 `resolveError` 不重复抛。`open(session)` 拒绝 `session <= 0`，构造 `DynamicsProcessing(0, session)`，从 `getPreEqByChannelIndex(0).getBandCount()` 读真实段数，`hasControl()` 为真且段数大于 0 才算成功。`apply()` 只写前 `min(真实段数, 6, 增益数组长度)` 段，多出来的段**故意不动**——默认平直，若全停到最后一个频点会叠出一堆本不想要的滤波器（证据：AudioEq.java — "Surplus bands are left untouched"）。
+- Limiter 接在链路最后一级：阈值 −1 dBFS、attack 5 ms、release 60 ms、ratio 10，只压会削顶的峰。它单独解析，取不到就不启用，绝不让整条 EQ 失效（证据：AudioEq.java — `enableLimiter()`、`setLimiterAllChannelsTo`）。
 
-- `dap_hw` 确实注册在系统：flinger dump 里能看到该 UUID 与 implementor（证据：device/dumpsys-audio-flinger.txt — "- UUID: 9d4921da-8225-4f29-aefa-39537a04bcaa"、"- implementor: Dolby Laboratories"）。
-- dolby 效果器是当前活动效果，且有 device→effect 映射（证据：device/dumpsys-audio.txt — "Current active effect: dolby"、"Device -> Effect map: {speaker=dolby,headset}"）。
-- spatializer 被反复开关，印证"空间音频开着时走独立输出链"的判断（证据：device/dumpsys-audio.txt — "onSpatializerEnabledChanged: enabled=true, current effect type=0" 多行）。
-- 系统 blur 默认开启，这也是后来"模糊丢失"现象显眼的原因（证据：device/system-props.txt — "persist.sys.background_blur_setting]: [1]"、"persist.sys.background_blur_supported]: [true]"）。
+**`Presets` 九套曲线**：`KEYS`/`NAMES`/`NOTES` 三组元数据 + `CURVES` 二维数组（9 × 6）。设计约束写在注释里：每套至少有一个频段相对平直偏 ≥5 dB，两两之间至少一处差 ≥4 dB，保证切换能听出来。原厂平直一行全 0。
 
-## 3. 关键决策
+| key | 名称 | 250 | 500 | 1k | 2k | 4k | 6.3k |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| flat | 原厂平直 | 0 | 0 | 0 | 0 | 0 | 0 |
+| natural | 自然均衡 | +2 | +1 | 0 | 0 | +1 | +1 |
+| harman | 哈曼卡顿 | +11 | +9 | −3 | −6 | −2 | −5 |
+| burmester | 柏林之声 | +4 | +2 | −1 | +4 | +10 | +11 |
+| punch | 现场低频 | +12 | +12 | +5 | −7 | −11 | −12 |
+| cinema | 影院包围 | +10 | +8 | +2 | −3 | −9 | −11 |
+| vocal | 人声清晰 | −10 | −12 | +6 | +9 | +4 | 0 |
+| bright | 明亮解析 | −9 | −7 | +1 | +6 | +11 | +12 |
+| night | 夜间柔化 | +6 | +4 | 0 | −7 | −11 | −11 |
 
-1. **走 AudioEffect 通道，不做 XML 替换**。原因是 XML 路线每次切换要重启音频服务，且与 MiSound 抢同一份文件（证据：docs/固件逆向报告-OS4.0.5.0.md — "能改到 20 段，但每次切换要重启音频服务，且和 MiSound 抢同一份文件"）。这直接导致 `aurora-lsp` 成为主线、`aurora-pro` 归档。
-2. **必须按播放会话挂，不挂 session 0**。本机开空间音频时音乐走 `AudioOut_5D`（SPATIALIZER）带 per-session 效果链，session 0 的链被完全绕过（证据：docs/固件逆向报告-OS4.0.5.0.md — "开启空间音频时，音乐在 AudioOut_5D（type 7 SPATIALIZER）上播放，携带 per-session 效果链；AudioOut_D 的 session 0 链根本没有音频流经过"）。代码层面体现为 `open(audioSession)` 直接拒绝 `<=0`（证据：DolbyDap.java — "if (audioSession <= 0) { lastError = \"invalid session \" + audioSession; return false; }"）。
-3. **所有音频 HAL 调用下沉到私有线程**。这是用系统崩溃换来的教训，代码里三处注释反复强调（证据：AuroraXposed.java — "Running them on the system_server main looper makes the watchdog kill the system process, so nothing here ever touches the main thread."）。
-4. **profile 数量与顺序写死为 9，读值只做校验**。因为 `getParameter` 全线返回 12 且不回填（证据：docs/固件逆向报告-OS4.0.5.0.md — "getParameter 对  x03000005、 x04000005、 x0A000005、 x01000005、 x0D000005 全部返回 12，且缓冲区原样返回命令字"）。
-5. **默认写全部 9 个 profile**。与官方 MiSound 行为一致，这样 app 触发的 profile 自动切换不会把曲线顶掉（证据：docs/固件逆向报告-OS4.0.5.0.md — "**默认写全部 profile**：与官方 MiSound 行为一致，这样 app 触发的 profile 自动切换不会把曲线顶掉"）。
-6. **只做叠加、零均值归一化**。原厂 GEQ 全为 0，所以零均值曲线是纯叠加、不改整体响度、不引入削顶（证据：docs/固件逆向报告-OS4.0.5.0.md — "原厂 GEQ 全为 0，所以写一条零均值曲线是纯叠加，不会削顶"）。
-7. **保留 AusioEffect 的通用 byte 通道而非找厂商 AIDL**。即所有厂商命令统一走 `setParameter(5, …)`，避免依赖隐藏 AIDL 接口（证据：DolbyDap.java — "Its vendor parameter space is a 32-bit command packet delivered through the generic AudioEffect byte-array channel."）。
-8. **配置与回执都放 `Settings.Global`，用 ContentObserver 解耦**。App 与 system_server 内模块不共享进程，`settings` 全局键是唯一低成本通道（证据：AuroraXposed.java — "resolver.registerContentObserver(Settings.Global.getUriFor(key), false, observer);"）。
-9. **保留紧急停机开关**。`aurora_panic` 一条命令释放全部效果器，是踩坑后加的保险（证据：README.md — "紧急停机：`adb shell settings put global aurora_panic 1`"）。
-10. **听感优先于对称性**：扬声器有效区间只有约 300 Hz–6 kHz，预设据此重写（证据：README.md — "47–328 Hz 和 9 k 以上的调整幅度再大也几乎听不出来"）。
+**`AuroraProbe` 开机自检**：模块在 system_server 里跑一次，六步——取 `AudioManager` → 播放会话 API 是否存在 → `DynamicsProcessing` 及其 `EqBand`/方法能否解析 → `AudioEffect.queryEffects()` 列出全局效果器 → `AudioManager.getDevices(GET_DEVICES_OUTPUTS)` 列输出设备 → 读输出采样率/每缓冲帧数。任何一步失败就记 `aurora_probe_stage` 为那一步的编号，并写回机型、SoC、SDK、系统版本。全程不抛异常，失败本身就是一条记录（证据：AuroraProbe.java 类注释 — "Never throws: any failure becomes a recorded stage."）。
 
-## 4. 踩过的坑
+stage 语义（证据：DeviceProfile.kt — `stageLabel()`）：`0` 链路可访问、`1` 取不到 AudioManager、`2` 取不到播放会话信息、`3` 本机没有可用的均衡器实现、`-1` 未检测（模块根本没跑）。`stage == -1` 是最常见的"装了但没反应"。
 
-- **在 system_server 主线程做音频调用 → watchdog 直接杀系统进程**，表现是 SystemUI 连环重启、壁纸黑屏、背景模糊消失。（证据：docs/固件逆向报告-OS4.0.5.0.md — "**system_server 主线程碰不得。** 在 AudioService 的主 Looper 上做上述调用，一旦阻塞就是 watchdog 杀系统进程；实测导致 SystemUI 连环重启、壁纸黑屏"；README.md — "放在主线程会被 watchdog 杀掉整个系统进程（壁纸变黑、模糊丢失、SystemUI 连环重启就是这么来的）"）修复方式：独立 `HandlerThread` + `THREAD_PRIORITY_BACKGROUND`，见第 3 节第 3 条。
-- **挂 session 0 完全没声音变化**。曾以为全局输出混音就是唯一入口，实测被 spatializer 的 per-session 链绕过（证据：docs/固件逆向报告-OS4.0.5.0.md — "写 session 0 完全无效"）。
-- **新建效果器默认 `enabled=false`**，只写曲线不开总闸等于什么都没做（证据：docs/固件逆向报告-OS4.0.5.0.md — "**新建实例默认 enabled=false。** 必须显式下发 CMD_ENABLE=[1]，否则写入没有任何效果"）。
-- **读接口是幻觉**：六类 get 命令 rc 恒为 12、缓冲区原样返回，任何用读值当循环上界或"当前 profile"的做法都是错误来源（证据：docs/固件逆向报告-OS4.0.5.0.md 10.2 第 1 条）。
-- **老方案的 5 段均衡器根本不是这条链路**：`new Equalizer(0,0)` 命中的是 `libbundleaidl.so` 的 5 段 AOSP 实现，UI 上画的 10 段是插值假象（证据：docs/固件逆向报告-OS4.0.5.0.md — "0.4.0 UI 画 10 段曲线 | 上位机只有 5 个真实频段，曲线是插值出来的假象"）。
-- **`persist.vendor.audio.effectimplenter=dolby` 会把控制权搞丢**：与 Dolby 效果器实例冲突（证据：docs/固件逆向报告-OS4.0.5.0.md — "与 Dolby 效果器实例冲突，导致效果器失去控制权"）。注意这条与 `aurora-pro` 仍在写同名的属性**方向相反**，见待确认。
-- **增益堆在两头听不出来**：47–328 Hz 与 9 kHz 以上几乎不可闻，同一套 ±12 dB 曲线堆中频是"明显变亮"、堆两端是"一丝丝变化"（证据：docs/固件逆向报告-OS4.0.5.0.md — "同一套 ±12 dB 曲线，堆在两端时\"一丝丝变化\"，做在中频时\"明显变亮\""）。
-- **会话切换有约 2 秒空窗**（track 重建时旧会话已释放、新会话尚未被 2 s 轮询捡到）（证据：README.md — "会话切换瞬间（track 重建）有约 2 秒空窗"）。
-- **旧 XML 路线的半状态问题**：改属性成功但 XML 未生效会留下不一致，v5.7.0 才做到"任一步失败都会回退"（证据：aurora-pro/releases/AURORA-pro_v5.7.0_修复说明.md — "运行时先生成并绑定 XML，再写音频属性；任一步失败都会回退，不留下\"属性已改但 XML 未生效\"的半状态"）。
-- **soft-reboot / 模块更新后旧 XML 绑定残留**，导致状态降级，需要先解绑再重新生成快照（证据：aurora-pro/releases/AURORA-pro_v5.7.1_修复说明.md — "修复 soft-reboot 或模块更新后旧 XML 绑定残留导致的降级问题"）。
-- **ADB 本身不稳定**：曾出现 USB 授权后立即掉线（证据：aurora-pro/releases/AURORA-pro_v5.7.1_修复说明.md — "当前设备上的 adb 曾出现过 USB 授权后立即掉线的情况"）。这是仓库内唯一一条 ADB 调试异常记录。
-- **`AURORA-marked XML` 自检保护会挡住快照**：`aurora.log` 里反复出现拒绝对已被 AURORA 标记的 XML 做快照，并直接导致一次 `prepare failed`（证据：aurora-pro/device/aurora.log — "refusing to snapshot AURORA-marked XML: /odm/etc/dolby/dax-default.xml"、"prepare failed; no runtime properties written"）。
+**UI（Compose + MIUIX）**：`MainActivity.kt` 承载四页横向 pager——**音效 / 均衡 / 诊断 / 设置**，每页顶部一条 `StatusStrip` 实时状态条（生效/等待播放/已关闭/写入失败，2 秒刷新）。旧的「场景」页已删除，因为环绕、对白那些开关是 Dolby 通道的，在软件均衡器路线上没有对应参数。
 
-## 5. 当前待办
+- 音效页：大卡片横滑选预设 + 总开关 + 当前曲线缩略。
+- 均衡页：六段可拖 + 强度 + 恢复平直（带确认）+ 恢复自存曲线。
+- 诊断页：测试音自检、系统回执、会话列表、机型与链路档案。
+- 设置页：外观（模糊底栏 / 液态玻璃 / 角标 / 导航栏形态）、检查更新、反馈、关于。
+- 液态玻璃与模糊底栏移植自 KernelSU，`Lens.kt` 的折射 shader 来自 AndroidLiquidGlass（证据：docs/THIRD-PARTY.md）。
+- 读侧不走 root：所有 `Settings.Global` 读都在 `Dispatchers.IO` 上批量做完再一次性发布，避免主线程八次 binder 往返把页面切换拖卡（证据：AuroraState.kt — "Settings.Global reads are binder round trips; doing eight of them on the main thread every two seconds was enough to make page switches stutter"）。
+- 写侧走 root：`ProcessBuilder("su", "-c", command)`，一条命令串起 `settings put` 并回显 `AURORA_OK` 作为成功凭据，15 秒超时（证据：AuroraState.kt — `runRoot`）。预设 key 进 shell 前先对白名单校验，不在 `Presets.KEYS` 里就退回 `flat`。
 
-用户口径是"下一步先补齐现状文档"，据此判断当前缺口主要在**文档自身与代码/现实的漂移**，而不是功能。
+**反馈与日志**：`AuroraLog` 是滚动文件日志，上限 192 KB，超了裁到 96 KB 且从行边界切，写日志本身绝不抛异常。反馈表单 `Feedback.reportIssue()` POST 到 `https://lingluandf.online/feedback/report`，日志只在用户开着开关时随件带走。链路不可用时 `reportDevice()` 自动上报一次机型档案，用 `stage:versionCode` 去重，同一版本同一个失败阶段只报一次（证据：Feedback.kt — `stamp = "${profile.stage}:$versionCode"`）。
+- `reportIssue` 返回三种结果：提交成功、服务器拒绝（带 HTTP 状态码）、连不上服务器（带异常类型）。UI 分别给不同文案——1.2.0 及以前只返回布尔值，把 405 也报成"请检查网络"（证据：Feedback.kt — `sealed interface SendResult`）。
 
-1. **文档口径统一**（最直接缺口）：README、逆向报告、代码三处的配置键与回执键不一致，见待确认 2–4。
-2. **预设重调**：按 300 Hz–6 kHz 重新设计 9 套曲线，"低频冲击"要改成中低频推动（证据：README.md — "**预设重调**：按 300 Hz–6 kHz 有效区间重新设计 9 套曲线"）。注：`Presets.java` 注释显示曲线已按此结论写过一轮，是否已完成听感复核需确认(推断) 代码注释与 README 待办同时存在，说明"实现已改、待办未销号"。
-3. **场景项量纲校准**：对白增强/声场宽度/残响/音量均衡的强度范围仍是保守猜测值（证据：README.md — "**场景项量纲校准**：对白增强 / 声场宽度 / 残响 / 音量均衡的强度范围还是保守猜测值"）。
-4. **曲线确认间隙**：会话切换约 2 s 空窗，可缩短轮询或改监听会话变化事件（证据：README.md — "**曲线确认间隙**：会话切换瞬间（track 重建）有约 2 秒空窗"）。
-5. **App 端体验**：20 段目前只能拖单点，缺整体升降；诊断页可补"当前挂载会话"实时刷新（证据：README.md — "**App 端体验**：20 段曲线目前只能拖单点，缺整体升降"）。
-6. **旧路线归属**：`aurora-pro/` 确认不要后移出工程（证据：README.md — "**旧路线归档**：`aurora-pro/` 确认不要后移出工程"）。
-7. **补运行时证据链**：`device/` 里没有 AURORA 自己的 logcat（`lsposed-modules.log` 3.3 MB 中含 "aurora" 的匹配数为 0，全是别的模块），诊断只能靠 `settings get global aurora_backend_*`，缺一份可复现的失败样本。
-8. **设备基线固化**：`_work/` 只留脚本与 `payload_manifest.json`(250 KB)，OTA 解包产物在 `_work/fs`（体积大），建议明确"哪些是可再生的"。
+**检查更新**：`Update.kt` 读 `https://lingluandf.online/aurora/latest.json`，比较 `versionCode`，给「前往下载」；无网/超时/字段缺失分别给明确文案，不白屏。原本读 GitHub Releases，因国内直连不稳才换成自建发布主机（同一台香港节点）（证据：Update.kt 类注释）。
 
-## 6. 相关文件路径
+**构建**：Gradle 9.3.1 + AGP，`compileSdk 37 / minSdk 33 / targetSdk 36`，JDK 17，Compose BOM `2025.09.00`，MIUIX `0.9.4`。`build.sh` 只是一层包装：`gradle :app:assembleRelease --no-daemon` → 复制成 `out/AURORA-1.2.0.apk` → 打印大小与 sha256。签名用 `out/aurora-observer.jks`。仓库里的 `spike/` 是早期 Gradle 试验缓存，已进 `.gitignore`。
 
-> 相对根目录 `C:\Users\lldf\XiaomiMiMoProjects\音频模块`。仅列实际读过或用于定位的文件。
+**产物与仓库**：`out/AURORA-1.2.0.apk`（31.4 MB，2026-11-06 03:01），`out/` 下并存历史的 `AURORA-1.0.0` / `1.1.0` 与更早的 `AURORA-LSP-0.x/1.x`（javac 时代的产物，41 KB 级）。`.gitignore` 排除 `aurora-lsp/out/`、`_work/`、`device/`、`reference/`、`spike/`、`aurora-pro/`、`officelite/`，所以 GitHub 上只有 `aurora-lsp/`、`docs/`、`assets/`、README、CONTEXT、LICENSE。
 
-Java 注入层（主线）：
-- `aurora-lsp/app/src/main/assets/xposed_init` — 入口类声明（28 B）
-- `aurora-lsp/app/src/main/AndroidManifest.xml` — 模块元数据、包名 `com.aurora.audio.lsp`、1.5.0
-- `aurora-lsp/app/src/main/java/com/aurora/lsp/AuroraXposed.java` — hook 与线程启动（5.9 KB）
-- `aurora-lsp/app/src/main/java/com/aurora/lsp/AuroraEngine.java` — 会话发现、曲线计算、写入、回执（16 KB）
-- `aurora-lsp/app/src/main/java/com/aurora/lsp/DolbyDap.java` — `dap_hw` 反射封装、命令协议、参数常量（10 KB）
-- `aurora-lsp/app/src/main/java/com/aurora/lsp/Presets.java` — 9×20 段 dB 曲线（2.9 KB）
-- `aurora-lsp/app/src/main/java/com/aurora/lsp/MainActivity.java` — 四页 UI + 测试音（47 KB，仅抽读）
-- `aurora-lsp/build.sh` — javac + d8 + aapt + apksigner，无 Gradle，`VERSION="1.5.0"`
-- `aurora-lsp/out/AURORA-LSP-1.5.0.apk` — 当前产物（41 KB）
+## 4. 关键决策
 
-Magisk/KernelSU 旧路线：
-- `aurora-pro/device/module.prop` — id `AURORA-pro`，v5.7.3
-- `aurora-pro/device/customize.sh`、`post-fs-data.sh`、`post-mount.sh`、`service.sh`、`uninstall.sh`、`system.prop`、`aurora.conf`
-- `aurora-pro/device/aurora_core.sh` — 运行时核心（25 KB，函数表已抽读）
-- `aurora-pro/device/aurora_xml_patch.sh` — awk 打补丁（6.7 KB，仅读前 40 行）
-- `aurora-pro/device/aurora.log` — 真机运行日志（2.8 KB，全读）
-- `aurora-pro/device/module_status` — 状态键值快照
-- `aurora-pro/device/data/runtime/dax-default.xml` — Dolby 配置副本（120 KB，未读正文）
-- `aurora-pro/releases/AURORA-pro_v5.7.0_修复说明.md`、`..._v5.7.1_修复说明.md`
+1. **放弃 Dolby DAP，改驱动 AOSP 软件均衡器**。Dolby 在这条链路上只当控制面，参数写了不处理音频；`DynamicsProcessing` 是真正跑在混音链上的软件级，普通路径与 spatializer 路径都生效。
+2. **按播放会话挂，不挂 session 0 / 全局混音**。空间音频把音乐切到 `AudioOut_5D` 的 per-session 效果链，全局链上根本没有音频流经过。
+3. **每个新会话延迟一拍再挂效果器**。MiSound 在音轨开始时重建整条效果链，第一拍建的效果器会被孤悬——链上还在、`Enabled=y`，但不出声。所以第一次看到只登记，下一拍才 `open()`，而不是建了再拆（见决策 16）。
+4. **频段从 20 段收成六段**。20 段是 Dolby 的能力，不是扬声器的能力；六段落在真正能还原的窗口里，每段都有可听效果。
+5. **曲线等比缩放 + 预衰减，不减均值**。减均值抹平预设倾斜，九套会听起来一样；保形状、只降绝对电平才是对的选择。
+6. **抬升上限 6 dB，衰减放到 12 dB**。手机扬声器满音量已接近削顶，+12 dB 只会听起来"破"，不会更响。
+7. **所有音频调用下沉到私有线程**。这是用系统崩溃换来的教训（见下节第一坑），代码里三处注释反复强调。
+8. **配置与回执都放 `Settings.Global`**。App 与 system_server 不共享进程，`settings` 全局键是唯一零成本通道；曲线按十分之一 dB 存整数，规避浮点往返失真。
+9. **读失败保留上次配置**。一次读失败曾被当成"已关闭"，结果播放中途释放全部效果器、声音弹回原厂。现在有 `lastGood` 兜底。
+10. **写全部段会叠滤波器，所以多出的段不动**。`DynamicsProcessing` 的段数由系统给，只写我们认得的前六段，剩下保持平直。
+11. **保留急停开关**。`aurora_panic=1` 一条命令释放全部效果器，是踩坑后加的保险。
+12. **自检用"全频 −12 dB 持续 6 秒"**。听感上一强一弱就说明链路通，比看任何回执都直接。
+13. **不保留场景页**。那些参数只存在于 Dolby 通道，软件均衡器上没有对应物，留着就是假开关。
+14. **用户曲线单独存一份**。`aurora_geq_saved` 与 `aurora_geq` 分开，切预设清空当前曲线但不丢用户手调的曲线。
+15. **状态回执按签名去重**。`report()` 先把 state+message+bands+applied+sessions 拼成签名，与上次相同就直接返回，避免每 2 秒往 `Settings` 里写一遍同样的东西。
+16. **延迟首建，而不是建了再拆**。旧实现第一拍建效果器、第二拍拆掉重建，为的是躲开 MiSound 重建效果链，但代价是每个新音轨 release 一次，听感就是换歌/刷短视频时的断音。改成"第一次只登记、第二次才创建"，同样避开孤悬，且全程只有一次 open。
+17. **配置写入合批 150 ms**。保存一次设置要连写四个 `aurora_*` 键，逐条触发 tick 会让引擎读到半更新配置、连发几条中间曲线。观察者改为 `postDelayed(TICK, 150)`，合并成一次。
+18. **削顶用 limiter 解决，不靠继续降增益**。降峰值会牺牲预设差异；limiter 只在越界时压峰，既保住曲线形状又不再数字削顶，同时把"开沉浸声有杂音"这条路一并治了。
 
-配置与逆向中间产物：
-- `docs/固件逆向报告-OS4.0.5.0.md` — 唯一逆向报告（16 KB，全读，含第 10 节真机验证）
-- `_work/assets/odm_etc_audio/audio_effects_config.json` — 音量档位与 app→profile 映射（3 KB，全读）
-- `_work/probe/AuroraProbe.java` — 独立进程探针（10 KB，未读）
-- `_work/payload_manifest.json` — OTA manifest（250 KB，未读正文）
+## 5. 踩过的坑
 
-设备取证：
-- `device/check-module.sh` — 模块 ZIP 校验（路径/可执行位/CRLF/shellcheck）
-- `device/dumpsys-audio.txt`（175 KB）、`dumpsys-audio-flinger.txt`（600 KB）、`system-props.txt`(44 KB) — 仅 Select-String 抽样
-- `device/lsposed-modules.log`（3.3 MB）— 仅抽样，无 AURORA 记录
-- `device/misound-package.txt`(62 KB)、两份 `lsposed-config-*.db`、`zygisk*_module.prop` — 未读
+- **在 system_server 主线程做音频调用 → watchdog 杀系统进程**。现象是 SystemUI 连环重启、壁纸变黑、桌面高斯模糊丢失。根因：`AuroraEngine` 早期跑在 `Handler(Looper.getMainLooper())` 上，而 `getParameter` 六个命令一律返回 `rc=12` 且不回填，读出 `profileCount = 50331648`，对五千万个非法 profile 反复写把主线程钉死。修法：工作移到 `HandlerThread` + `THREAD_PRIORITY_BACKGROUND`，数量按固件写死，读值只做校验。（Dolby 时期的直接原因，但"独立线程"这条规矩一直留到现在。）
+- **挂 session 0 完全没声音变化**。曾以为全局输出混音就是唯一入口，实测被 spatializer 的 per-session 链绕过。
+- **Dolby DAP 写入成功但听感无变化**。诊断页测试音有明显区别、音效页放音乐完全无区别，写入返回成功。根因：Dolby 在 spatializer 链路上只是控制面，参数能写不处理音频。修法：整条路线换成 `DynamicsProcessing`。
+- **空间音频效果器创建报 `-3`**。Dolby 效果器在空间音频链路上创建直接失败（未实现厂商参数通道）。同一个决策的另一个证据。
+- **第一拍建的效果器被挂空**。现象：链上还在、`Enabled=y`、就是不出声。根因：MiSound 在音轨开始时重建效果链，第一个 tick 创建的效果器挂到临时链上随后孤悬。修法：第一次看到会话时不要建它，等下一拍链路稳定再挂，全程只创建一次（见决策 3、16）。
+- **每个新会话被建了两次效果器（1.2.0 及以前）**。现象：换歌、刚进抖音、每刷一个视频都有断音。根因：第一拍建、第二拍 `close()` 后重建，release 会拆链。修法：改成延迟首建，全程只 open 一次（见决策 16）。
+- **减均值归一化让九套预设听起来一样**。根因：倾斜型曲线减完均值后差异被压平。修法：等比缩放保形状，另加 6 dB 抬升上限做预衰减。
+- **`points` 数组越界导致 App 闪退**。`points` 只有 20 个元素，按 `i * 2` 索引需要 40 个。修法：修正索引与数组长度后重编。
+- **多写段数会叠出多余滤波器**。`DynamicsProcessing` 的段数与我们的频段表不一定相等，若把多余段全按到最后一个频点，等于叠了一串没打算要的滤波器。修法：只写认得的段，其余不动。
+- **主线程八次 `Settings` 读把页面切换拖卡**。每次读都是一次 binder 往返。修法：`Dispatchers.IO` 上批量读，一次性发布。
+- **切预设时引擎读到半更新配置**。现象：切换预设瞬间声音抖一下。根因：App 连写四个 settings 键，`ContentObserver` 每次都立即触发 tick，下发了"新预设 + 旧强度"这类中间态曲线。修法：观察者合批 150 ms（见决策 17）。
+- **`getParameter` 读接口是幻觉**（Dolby 时期）。六类 get 命令 rc 恒为 12、缓冲区原样返回，任何用读值当循环上界或"当前 profile"的做法都是错误来源。现在的代码已不再依赖任何读接口。
+- **增益堆在两头听不出来**。47–328 Hz 与 9 kHz 以上几乎不可闻，同一套 ±12 dB 曲线堆中频是"明显变亮"、堆两端是"一丝丝变化"。这是六段方案与预设重做的直接依据。
+- **会话切换有约 2 秒空窗**（track 重建时旧会话已释放、新会话还没被 2 s 轮询捡到）。
+- **`/feedback/` 反代只配在子域，主域 POST 落到 SPA 兜底**。App 的地址是主域 `lingluandf.online/feedback/*`，而反代只写在 `aurora.lingluandf.online` 的 server 块里，主域没有对应 location，静态服务器对 POST 返回 405，客户端于是报"网络未连接"。同一台机器上 `/lib/`、`/dl/`、`/aurora/latest.json` 都踩过这个坑，这是第四次。修法：主域补 `location /feedback/` 反代到 `127.0.0.1:5002`，`client_max_body_size` 提到 320k。
+- **LSPosed 卸载重装后默认未启用也没勾作用域**。表现为模块不出现在日志、无任何回执。修法：在 LSPosed 管理器界面手动启用并在作用域钩「系统框架」，不要手改 LSPosed 数据库。
+- **升级 App 但不重启设备会留下旧引擎**。system_server 里跑的还是上一版代码：App 显示新预设，引擎照旧曲线。修法：`aurora_engine_version` 记下引擎版本，`DeviceProfile.staleEngine()` 比对不一致就提示重启。
+- **PowerShell 写文件会加 BOM 并展开变量**。BOM 会让 javac 不认，`$EqBand` / `$apkname` / `$host` 会被当变量展开写坏文件。修法：改用 Python 脚本或文件方式传输，避开 shell 转义与插值。
+- **GitHub Releases 在国内直连不稳**。检查更新原设计读 GitHub Releases、无需后端，实测不可靠，改读同一台香港节点上的 `latest.json`。
 
-不读的二进制（仅记名/大小）：`reference/framework.jar`（51 MB）、`reference/MiSound.apk`（19 MB）、`*.apk`/`*.aar`/`*.jar`/`*.db` 正文。
+旧 Magisk/KernelSU 路线的坑（改 XML 的半状态、soft-reboot 后绑定残留、`AURORA-marked XML` 挡住快照、ADB 授权后掉线）随 `aurora-pro` 归档一并封存，细节见 `aurora-pro/releases/` 两份修复说明，不再影响当前实现。
 
-另有 `officelite/`（独立项目，含 `src/`、`docs/`、`tools/`、`run.bat`），不属于本项目范围。
+## 6. 当前待办
 
-## 待确认
+1. **真机听感复核**。九套预设 + 本轮三项修复（沉浸声杂音、刷视频断音、切预设抖动）都要上机确认；仓库里没有听感复核记录。
+2. **延迟首建带来的最多一拍空窗**。现在每个新会话要等下一拍（≤2 s）才挂上效果器，不再有断音但起播时仍有一小段无 EQ。可选方向：缩短轮询或改监听 `registerAudioPlaybackCallback`。
+3. **非小米机型适配**。兼容路径只有 probe 的六个检查点，没有针对其它品牌音频链路的特判；`stage` 报回来之后如何映射成具体适配动作还没写。
+4. **limiter 参数待真机校准**。阈值 −1 dBFS、attack 5 ms、release 60 ms、ratio 10 是保守起点；若低频出现"抽吸感"，说明 release 偏长或 ratio 偏狠。
+5. **`aurora_geq_saved` 未注册观察者**。`observe()` 只监听六个键，它不在其中；目前靠下一次 tick 顺带反映，行为正确但依赖隐式时序。
+6. **构建脚本硬编码版本号**。`build.sh` 的产物名与 `app/build.gradle.kts` 的 `versionCode`/`versionName` 要手改三处，1.2.1 已同步，但仍是隐患。
+7. **签名口令明文**在 `app/build.gradle.kts`（`out/aurora-observer.jks` 亦在同处）。自用无妨，仓库若转公开值得改成从 `local.properties` 读。
+8. **`spike/` 可清理**。早期 Gradle 试验缓存，已被忽略，删掉不影响构建。
 
-1. **壁纸/模糊异常无原始日志**。仓库里只有两处结论性表述（README 三条铁律第 1 条、逆向报告 10.2 第 5 条），没有任何带时间戳的 logcat、无 `dumpsys` 对照、无 ANR/watchdog 堆栈；`device/lsposed-modules.log` 中 "aurora" 匹配数为 0。因此"ADB 调试记录"只落到了结论，没落到证据。
-2. **`aurora_scope` 键疑似不存在**。逆向报告 §7 的配置键清单里列了 `aurora_scope`，但 `AuroraEngine` 的常量表（K_*）里没有它，`AuroraXposed.observe()` 注册的 15 个键里也没有。是文档残留还是代码漏实现？
-3. **回执键两份文档互相矛盾**。README 写 `aurora_backend_state/_message/_bands/_sessions/_applied/_updated`；报告 §7 写 `_profile/_profiles/_capability`。代码实际只写 state/message/bands/sessions/applied/updated 六个，没有 `_profile`/`_profiles`/`_capability`。以代码为准的话，报告那段已过时。
-4. **构建产物版本号注释不一致**。`build.sh` 里 `VERSION="1.5.0"`，但 README「构建与安装」代码块的注释写的是 "产物：out/AURORA-LSP-1.1.0.apk"。另外 `out/` 里没有 `AURORA-LSP-1.0.0.apk` 本体（只有 `.idsig`）。
-5. **两代方案对同一个 prop 态度相反**。报告判定 `persist.vendor.audio.effectimplenter=dolby` 会导致效果器失去控制权，而 `aurora-pro/aurora_core.sh` 仍在主动写这个属性。现在 `aurora-pro` 归档、`aurora-lsp` 生效，二者是否需要共存/互斥未见记录。
-6. **`aurora-pro` 最后一次真机状态是 STOCK 而非 ACTIVE**。`device/module_status` 为 `STATUS=STOCK`、`XML_MODE=stock`，而 v5.7.1 修复说明称设备复核为 `STATUS=ACTIVE`。仓库内两个状态快照谁更新、归档前是否已回退到原厂，无法判定。
-7. **预设待办是否已销号**。README 待办 1 要求重调预设，`Presets.java` 注释显示已按 300 Hz–6 kHz 结论写过；但没人记录"听感复核通过"。属实现已改、验收未留痕。
-8. **`dax-default.xml` 是否与设备逐字节一致**。报告称 sha256 与设备一致（`0b9d1a2b…cd9437`），仓库内 `aurora-pro/device/data/runtime/dax-default.xml` 与 `stock-dax-default.xml` 同为 119916 B。本次未做哈希比对（禁止跑脚本），一致性只能引用报告。
-9. **`_work/probe/AuroraProbe.java` 未读**。它是独立进程探针（README 提到"probe/（独立进程探针）"），可能是理解"如何在不进 system_server 的情况下验证效果器"的关键，本次未展开。
-10. **`device/` 两份 `lsposed-config-*.db` 未读**（413 KB/417 KB 二进制），其中可能记录了模块作用域勾选的历史状态，本次只按文件名推断用途。
+## 7. 相关文件路径
+
+> 相对根目录 `C:\Users\lldf\XiaomiMiMoProjects\音频模块`。只列本次实际读过或用于定位的文件。
+
+注入与引擎（`aurora-lsp/app/src/main/java/com/aurora/lsp/`）：
+- `AuroraXposed.java`（6.0 KB）— 入口、hook、线程、观察者、Probe 触发
+- `AuroraEngine.java`（16 KB）— tick 主流程、会话扫描、曲线计算、回执、滚动日志
+- `AudioEq.java`（6.0 KB）— `DynamicsProcessing` 反射封装、六段频点、±12 dB 限幅、limiter 防削顶
+- `AuroraProbe.java`（10 KB）— 开机六步链路自检，结论写 `Settings.Global`
+- `Presets.java`（2.3 KB）— 9 × 6 曲线与元数据
+
+UI（`aurora-lsp/app/src/main/kotlin/com/aurora/lsp/`，共 16 个文件）：
+- `MainActivity.kt`（55 KB）— 四页 pager、状态条、音效/均衡/诊断/设置、测试音播放
+- `AuroraState.kt`（8.4 KB）— UI 单一数据源，读走 IO 线程、写走 su
+- `DeviceProfile.kt`（3.2 KB）— probe 结果的类型化读取与 `stage` 释义
+- `Feedback.kt`（4.8 KB）/ `FeedbackSheet.kt`（9.8 KB）— 反馈上报与表单
+- `AuroraLog.kt`（1.7 KB）— 192 KB 滚动日志
+- `Update.kt`（2.7 KB）— `latest.json` 检查更新
+- `About.kt`、`AuroraBottomBar.kt`、`FloatingBottomBar.kt`、`liquid/{Lens,CombinedBackdrop,InnerShadow,Vibrancy}.kt`、`animation/{DampedDragAnimation,InteractiveHighlight}.kt`、`modifier/DragGestureInspector.kt`、`theme/DarkTheme.kt` — 液态玻璃与底栏（移植自 KernelSU，见 docs/THIRD-PARTY.md）
+
+构建与清单：
+- `aurora-lsp/build.sh` — Gradle 包装 + 复制产物 + sha256
+- `aurora-lsp/build.gradle.kts` / `settings.gradle.kts`（阿里云 Maven 镜像）/ `app/build.gradle.kts`（1.2.0 / 1200 / compileSdk 37）
+- `aurora-lsp/app/src/main/AndroidManifest.xml` — 包名 `com.aurora.audio.lsp`、`xposedmodule`、`xposedminversion 93`、`xposedscope`
+- `aurora-lsp/app/src/main/assets/xposed_init` — `com.aurora.lsp.AuroraXposed`
+- `aurora-lsp/app/src/main/res/values/arrays.xml` — `xposed_scope = [android]`
+- `aurora-lsp/build-legacy.sh` — javac + d8 时代的老构建脚本，仅存档
+
+产物：
+- `aurora-lsp/out/AURORA-1.2.1.apk` — 当前产物（30 MB，2026-11-06 21:07）
+- `aurora-lsp/out/AURORA-1.0.0.apk` / `1.1.0.apk` — 历史版本
+- `aurora-lsp/out/AURORA-LSP-*.apk` — javac 时代产物（29–41 KB），仅供考古
+
+文档：
+- `README.md` — 对外口径（1.2.0，已与代码一致）
+- `docs/PLAN-1.0.0.md` — 1.0.0 重构计划：路线 A/B 抉择、四页信息架构、预设重做原则、里程碑
+- `docs/THIRD-PARTY.md` — KernelSU / AndroidLiquidGlass / miuix 的许可与移植清单
+- `docs/RELEASE-1.2.1.md` — 1.2.1 交付说明：三条反馈的根因、修法与验证边界
+- `docs/固件逆向报告-OS4.0.5.0.md` — Dolby DAX3 时期的逆向报告（16 KB）。**仅作历史证据**，其中 20 段 GEQ、命令码、`getParameter` 行为已不在当前实现里
+
+已归档、被 `.gitignore` 排除（不在 GitHub 上）：
+- `aurora-pro/` — Magisk/KernelSU 旧路线，`module.prop` v5.7.3，改 Dolby XML + 写 4 个 `persist.*` 属性
+- `device/` — 真机取证：`dumpsys-audio*.txt`、`system-props.txt`、`lsposed-modules.log`、两份 `lsposed-config-*.db`
+- `_work/` — OTA 解包产物、`payload_manifest.json`、早期 `probe/AuroraProbe.java`
+- `reference/` — `framework.jar`（51 MB）、`MiSound.apk`（19 MB）等只读二进制
+- `spike/` — Gradle 试验缓存
+
+## 8. 待确认
+
+19. **听感复核没有留痕**。九套曲线是否逐套上机确认过"能明显听出差别"，仓库里没有记录；`Presets.java` 注释里的设计约束说明写过一轮，但验收结论缺失。
+20. **空间音频开/关两种情况下是否都实测过**。README 与代码注释都声称"开不开空间音频都一样有效"，这是按会话挂载的设计推论；仓库内没有一份对照记录（哪种输出线程、哪个 session、听感差异）。
+21. **`aurora_geq_saved` 的实际读取路径**。代码里 `K_GEQ_SAVED` 只被 App 侧读取，引擎侧 `read()` 不消费它；这是有意为之还是遗漏，需要确认设计意图。
+22. **非小米机型的适配契约未定义**。`stage` 报回来之后，谁来决定"这机型能不能用、缺什么、怎么补"，目前只有上报通道，没有处理流程。
+23. **`device/` 里的旧取证是否还适用**。`dumpsys-audio*.txt` 抓的是 Dolby 时期的链路，对现在的 `DynamicsProcessing` 路线已无直接参考价值；保留是为了历史，但容易误导后来者（本文件第 7 节已标注）。
