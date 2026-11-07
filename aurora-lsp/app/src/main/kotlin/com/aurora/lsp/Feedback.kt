@@ -97,10 +97,13 @@ object Feedback {
         profile: DeviceProfile,
         versionCode: Int,
         versionName: String,
-        prefs: SharedPreferences
+        prefs: SharedPreferences,
+        force: Boolean = false
     ): Boolean = withContext(Dispatchers.IO) {
+        // Automatic reports stay deduplicated; a report the user asked for always goes out,
+        // because "I pressed the button" is new information even when the profile has not changed.
         val stamp = "${profile.stage}:$versionCode"
-        if (prefs.getString(KEY_REPORTED, null) == stamp) return@withContext false
+        if (!force && prefs.getString(KEY_REPORTED, null) == stamp) return@withContext false
 
         val body = JSONObject().apply {
             put("kind", "device_profile")

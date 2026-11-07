@@ -87,6 +87,18 @@ public final class AuroraEngine {
      * Lifting is capped and the rest of the curve is shifted down to compensate.
      */
     private static final float MAX_BOOST_DB = 6f;
+    /**
+     * Per-band ceiling on how much a curve may lift.
+     *
+     * <p>The bottom and top bands both get a lower ceiling, for the same reason from two directions.
+     * Lifting 10 kHz amplifies quantisation noise in low-bitrate sources - game audio, voice chat,
+     * tiny web players - which comes out as a steady hiss. Lifting 80 Hz past +4 dB asks a phone
+     * speaker to move further than it physically can, and the crackle people reported on short
+     * videos is that limit being hit, not a limiter failure. Normal music loses very little from
+     * either cap.
+     */
+    private static final float[] MAX_BOOST_BY_BAND = {4f, 6f, 6f, 6f, 6f, 4f};
+
     /** Loudness compensation shape per band, scaled by how far the volume sits below 60%. */
     private static final float[] LOUDNESS_SHAPE = {1.0f, 0.5f, 0f, -0.1f, 0.3f, 0.6f};
     private static final float MAX_LOUDNESS_BOOST_DB = 4f;
@@ -429,7 +441,8 @@ public final class AuroraEngine {
         }
 
         for (int i = 0; i < AudioEq.BANDS; i++) {
-            out[i] = Math.max(-MAX_BAND_DB, Math.min(MAX_BOOST_DB, out[i]));
+            float cap = MAX_BOOST_BY_BAND[Math.min(i, MAX_BOOST_BY_BAND.length - 1)];
+            out[i] = Math.max(-MAX_BAND_DB, Math.min(cap, out[i]));
         }
         return out;
     }

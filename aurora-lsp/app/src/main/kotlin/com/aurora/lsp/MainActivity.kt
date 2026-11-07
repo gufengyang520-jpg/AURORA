@@ -168,6 +168,7 @@ private fun AuroraApp() {
     var showDevice by remember { mutableStateOf(false) }
     var showPresets by remember { mutableStateOf(false) }
     var showThemes by remember { mutableStateOf(false) }
+    var adaptationResult by remember { mutableStateOf<String?>(null) }
     var showEditor by remember { mutableStateOf(false) }
     var editorCreating by remember { mutableStateOf(false) }
     // The first launch always gets the explanation once. Afterwards it only returns when a fresh
@@ -314,7 +315,32 @@ private fun AuroraApp() {
                                         showEditor = true
                                     }
                                 )
-                                2 -> DiagPage(state, dark, scope)
+                                2 -> DiagPage(
+                                    state = state,
+                                    dark = dark,
+                                    scope = scope,
+                                    profile = profile,
+                                    adaptation = adaptationResult,
+                                    onRequestAdaptation = {
+                                        adaptationResult = "正在提交…"
+                                        scope.launch {
+                                            val ok = Feedback.reportDevice(
+                                                context.applicationContext,
+                                                profile,
+                                                version.code,
+                                                version.name,
+                                                prefs,
+                                                force = true
+                                            )
+                                            adaptationResult = if (ok) {
+                                                AuroraLog.append(context, "adaptation", "submitted")
+                                                "已提交。这条记录会带着参数级日志，作者能看到卡在哪一段。"
+                                            } else {
+                                                "提交失败，检查一下网络再试。"
+                                            }
+                                        }
+                                    }
+                                )
                                 else -> SettingsPage(
                                     dark = dark,
                                     ui = ui,
@@ -1008,7 +1034,14 @@ internal fun BandRow(
 }
 
 @Composable
-private fun DiagPage(state: AuroraState, dark: Boolean, scope: kotlinx.coroutines.CoroutineScope) {
+private fun DiagPage(
+    state: AuroraState,
+    dark: Boolean,
+    scope: kotlinx.coroutines.CoroutineScope,
+    profile: DeviceProfile,
+    adaptation: String?,
+    onRequestAdaptation: () -> Unit
+) {
     val ink = if (dark) InkDark else Ink
     val muted = if (dark) MutedDark else Muted
     val accent = if (dark) AccentDark else Accent
@@ -1021,8 +1054,79 @@ private fun DiagPage(state: AuroraState, dark: Boolean, scope: kotlinx.coroutine
         if (playing) player.start(context) { scope.launch { state.selfTest() } } else player.stop()
     }
 
+    // 适配结论：先回答"这台机器到底能不能用"，再谈其它。
+    val rejected = state.backendState == "error" && state.backendMessage.contains("band")
+    val verdict = when {
+        !profile.probed -> "模块没有运行"
+        rejected -> "这台设备拒绝了均衡参数"
+        !profile.supported -> "自动检测停在「" + profile.stageLabel() + "」"
+        else -> "已适配"
+    }
+    val verdictDetail = when {
+        !profile.probed ->
+            "检测不到音频引擎。多半是 LSPosed 里没启用，或者启用后没重启设备。"
+        rejected ->
+            "系统拒绝了写入的某一频段。下面是它报的原始信息，申请适配会一起发回。"
+        !profile.supported ->
+            "音频链路和已验证的机型不同，现在开启不会有声音变化。"
+        else ->
+            "六段参数都能写入。如果愿意，可以把这台机器的链路档案发回，作者做适配时会拿来对照。"
+    }
+
     PageList {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(9.dp).clip(RoundedCornerShape(5.dp)).background(
+                            when {
+                                !profile.probed || !profile.supported || rejected -> WarnColor
+                                else -> OkColor
+                            }
+                        )
+                    )
+                    Spacer(Modifier.size(9.dp))
+                    Text(
+                        verdict,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = ink
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(verdictDetail, fontSize = 13.sp, lineHeight = 20.sp, color = muted)
+                if (rejected && state.backendMessage.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(state.backendMessage, fontSize = 11.sp, lineHeight = 17.sp, color = muted)
+                }
+                run {
+                    // Always offer the upload, even on a device that already works. Adaptation is
+                    // only useful if the author can compare chains across models, and a device
+                    // that never fails is exactly the reference point other reports get compared
+                    // against. Hiding the button behind "unsupported" hid most of that data.
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        when {
+                            adaptation == null && rejected -> "申请适配"
+                            adaptation == null -> "提交设备档案"
+                            else -> "重新提交"
+                        },
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = accent,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (dark) Color(0xFF1B2436) else Color(0xFFE8EEFB))
+                            .clickable { onRequestAdaptation() }
+                            .padding(horizontal = 20.dp, vertical = 12.dp)
+                    )
+                    adaptation?.let { message ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(message, fontSize = 12.sp, lineHeight = 18.sp, color = muted)
+                    }
+                }
+            }
+
             SectionCard {
                 Text("试听自检", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = ink)
                 Spacer(Modifier.height(4.dp))

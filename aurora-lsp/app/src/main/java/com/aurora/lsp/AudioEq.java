@@ -136,7 +136,9 @@ public final class AudioEq {
     private void enableLimiter() {
         if (effect == null || limiterCtor == null || setLimiterAll == null) return;
         try {
-            Object limiter = limiterCtor.newInstance(true, 0, 0.005f, 0.06f, 10f, -1f, 0f);
+            // -3 dBFS rather than -1: the extra 2 dB of headroom is what stops a bass-heavy
+            // preset from clipping the speaker on loud, low-bitrate material.
+            Object limiter = limiterCtor.newInstance(true, 0, 0.005f, 0.06f, 10f, -3f, 0f);
             setLimiterAll.invoke(effect, limiter);
         } catch (Throwable ignored) {
         }
@@ -179,11 +181,26 @@ public final class AudioEq {
             int used = Math.min(bandCount, Math.min(BANDS, gains == null ? 0 : gains.length));
             for (int i = 0; i < used; i++) {
                 float gain = Math.max(-MAX_DB, Math.min(MAX_DB, gains[i]));
-                setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
+                // Catch per band, not per call. A device that rejects one particular frequency
+                // reports "bad parameter value" with no hint which band caused it; recording the
+                // index, centre and value turns that into something an adaptation can act on.
+                try {
+                    setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
+                } catch (Throwable error) {
+                    lastError = "band " + i + " @ " + Math.round(BAND_HZ[i]) + " Hz, gain "
+                            + String.format(java.util.Locale.US, "%.1f", gain) + " dB: "
+                            + describe(error);
+                    return false;
+                }
             }
             // Surplus bands are left untouched: DynamicsProcessing reports them flat by default,
             // and parking them all on 6.3 kHz stacked filters we never meant to add.
-            setEnabled.invoke(effect, enabledStage);
+            try {
+                setEnabled.invoke(effect, enabledStage);
+            } catch (Throwable error) {
+                lastError = "setEnabled(" + enabledStage + "): " + describe(error);
+                return false;
+            }
             return true;
         } catch (Throwable error) {
             lastError = describe(error);
