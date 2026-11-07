@@ -1,5 +1,17 @@
 package com.aurora.lsp
 
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.animation.core.animateFloatAsState
+import com.aurora.lsp.liquid.lens
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.input.pointer.pointerInput
+import top.yukonga.miuix.kmp.blur.drawBackdrop
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import com.aurora.audio.lsp.R
 import top.yukonga.miuix.kmp.basic.Switch
 import android.content.Context
 import android.content.Intent
@@ -275,6 +287,9 @@ private fun AuroraApp() {
                     }
             ) {
                 Scaffold(
+                    // Transparent so the generated background reaches the status bar; the
+                    // scaffold used to paint its own surface over it.
+                    containerColor = Color.Transparent,
                     topBar = {
                         SmallTopAppBar(title = when (tab) {
                             0 -> "音效"
@@ -303,18 +318,12 @@ private fun AuroraApp() {
                                 .layerBackdrop(backdrop)
                                 .background(MiuixTheme.colorScheme.surface)
                         ) {
-                            // A trace of the accent at the top, so there is *something* behind the
-                            // glass to bend. Kept under 5% so the page still reads as flat.
+                            // A whisper of accent at the top, so glass has a gradient to bend. Under 5%,
+                            // otherwise it reads as a coloured page rather than a surface.
                             Canvas(Modifier.fillMaxSize()) {
-                                // Lower on light theme: 5% accent over near-white reads as a tint,
-                                // and the rest of the palette keeps light surfaces flat.
-                                val wash = if (dark) 0.05f else 0.02f
                                 drawRect(
                                     brush = Brush.radialGradient(
-                                        colors = listOf(
-                                            Accent.copy(alpha = wash),
-                                            Color.Transparent
-                                        ),
+                                        colors = listOf(Accent.copy(alpha = if (dark) 0.05f else 0.02f), Color.Transparent),
                                         center = Offset(size.width * 0.78f, 0f),
                                         radius = size.width * 0.95f
                                     )
@@ -322,6 +331,7 @@ private fun AuroraApp() {
                             }
                         }
 
+                        CompositionLocalProvider(LocalLiquidBackdrop provides backdrop) {
                         Column(
                             Modifier
                                 .fillMaxSize()
@@ -391,6 +401,7 @@ private fun AuroraApp() {
                                     onCheckUpdate = { runUpdateCheck(manual = true) }
                                 )
                             }
+                        }
                         }
                         }
                     }
@@ -602,7 +613,7 @@ private fun TonePage(
                             fontSize = 12.sp, color = muted
                         )
                     }
-                    Switch(checked = state.enabled, onCheckedChange = { value ->
+                    LiquidSwitch(checked = state.enabled, onCheckedChange = { value ->
                         scope.launch { state.update(newEnabled = value) }
                     })
                 }
@@ -1459,7 +1470,7 @@ private fun ToggleRow(
             Text(title, fontSize = 14.sp, color = if (dark) InkDark else Ink)
             Text(detail, fontSize = 11.sp, color = if (dark) MutedDark else Muted)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        LiquidSwitch(checked = checked, onCheckedChange = onChange)
     }
 }
 
