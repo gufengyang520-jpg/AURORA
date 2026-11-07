@@ -153,6 +153,17 @@ public final class AuroraEngine {
     private int lastSelftestToken;
     private long selftestUntil;
     private Config lastGood;
+    /**
+     * Last parsed JSON, keyed by the raw string it came from.
+     *
+     * <p>These two documents change maybe once a week, but read() runs every two seconds. Parsing
+     * a few KB of JSON 30 times a minute for an unchanged string is the largest avoidable cost in
+     * this loop.
+     */
+    private String cachedPresetsRaw;
+    private Map<String, float[]> cachedPresets = new HashMap<>();
+    private String cachedAppMapRaw;
+    private Map<String, String> cachedAppMap = new HashMap<>();
 
     private AuroraEngine(Context context) {
         this.context = context;
@@ -565,8 +576,18 @@ public final class AuroraEngine {
             config.preset = Settings.Global.getString(resolver, K_PRESET);
             config.strength = clamp(Settings.Global.getInt(resolver, K_STRENGTH, 100), 0, 100);
             config.userCurve = parseCurve(Settings.Global.getString(resolver, K_GEQ));
-            config.userPresets = parseUserPresets(Settings.Global.getString(resolver, K_USER_PRESETS));
-            config.appMap = parseAppMap(Settings.Global.getString(resolver, K_APP_MAP));
+            String presetsRaw = Settings.Global.getString(resolver, K_USER_PRESETS);
+            if (!textEquals(presetsRaw, cachedPresetsRaw)) {
+                cachedPresetsRaw = presetsRaw;
+                cachedPresets = parseUserPresets(presetsRaw);
+            }
+            config.userPresets = cachedPresets;
+            String appMapRaw = Settings.Global.getString(resolver, K_APP_MAP);
+            if (!textEquals(appMapRaw, cachedAppMapRaw)) {
+                cachedAppMapRaw = appMapRaw;
+                cachedAppMap = parseAppMap(appMapRaw);
+            }
+            config.appMap = cachedAppMap;
         } catch (Throwable error) {
             // One failed read used to mean "disabled", which released every effect and flipped the
             // sound back to stock mid-song. Keep the last good config instead.
@@ -592,6 +613,10 @@ public final class AuroraEngine {
             return null;
         }
         return curve;
+    }
+
+    private static boolean textEquals(String a, String b) {
+        return a == null ? b == null : a.equals(b);
     }
 
     private static int clamp(int value, int low, int high) {

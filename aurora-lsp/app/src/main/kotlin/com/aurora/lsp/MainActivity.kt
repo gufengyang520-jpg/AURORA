@@ -306,10 +306,13 @@ private fun AuroraApp() {
                             // A trace of the accent at the top, so there is *something* behind the
                             // glass to bend. Kept under 5% so the page still reads as flat.
                             Canvas(Modifier.fillMaxSize()) {
+                                // Lower on light theme: 5% accent over near-white reads as a tint,
+                                // and the rest of the palette keeps light surfaces flat.
+                                val wash = if (dark) 0.05f else 0.02f
                                 drawRect(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
-                                            Accent.copy(alpha = 0.05f),
+                                            Accent.copy(alpha = wash),
                                             Color.Transparent
                                         ),
                                         center = Offset(size.width * 0.78f, 0f),
