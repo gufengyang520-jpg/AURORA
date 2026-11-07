@@ -1,5 +1,6 @@
 package com.aurora.lsp
 
+import top.yukonga.miuix.kmp.basic.Switch
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -57,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -80,7 +82,6 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
-import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import com.aurora.lsp.theme.LocalAuroraDarkTheme
@@ -283,19 +284,50 @@ private fun AuroraApp() {
                         })
                     }
                 ) { inner ->
-                    Column(
-                        Modifier
-                            .fillMaxSize()
-                            // layerBackdrop must wrap the background, not sit inside it: it captures
-                            // what its children paint, so a background declared outside it is never
-                            // sampled and the dock's glass mixed towards black in light theme.
-                            .layerBackdrop(backdrop)
-                            .background(MiuixTheme.colorScheme.surface)
-                            // Only the top is padded: the bottom inset is left to the content so the
-                            // list scrolls underneath the gesture bar instead of stopping above it.
-                            .padding(top = inner.calculateTopPadding())
-                    ) {
-                        StatusStrip(state, dark)
+                    // Two layers, on purpose.
+                    //
+                    // The backdrop used to wrap this Column, which also held the pages. Anything
+                    // inside that Column that tried to sample the backdrop was therefore sampling a
+                    // layer that contained itself - the render tree recursed until libhwui blew the
+                    // stack. Splitting them fixes the direction of the dependency: the backdrop
+                    // holds only paint, the content sits above it and may read it freely.
+                    //
+                    // It also means the sampled content is a flat colour, so a glass control over it
+                    // shows refraction without much to refract. That is honest: on a solid
+                    // background, sampled glass and painted glass look the same. The layer is here
+                    // so controls can be wired to it safely, not to make them prettier today.
+                    Box(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .layerBackdrop(backdrop)
+                                .background(MiuixTheme.colorScheme.surface)
+                        ) {
+                            // A trace of the accent at the top, so there is *something* behind the
+                            // glass to bend. Kept under 5% so the page still reads as flat.
+                            Canvas(Modifier.fillMaxSize()) {
+                                drawRect(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(
+                                            Accent.copy(alpha = 0.05f),
+                                            Color.Transparent
+                                        ),
+                                        center = Offset(size.width * 0.78f, 0f),
+                                        radius = size.width * 0.95f
+                                    )
+                                )
+                            }
+                        }
+
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                // Only the top is padded: the bottom inset is left to the content so
+                                // the list scrolls underneath the gesture bar instead of stopping
+                                // above it.
+                                .padding(top = inner.calculateTopPadding())
+                        ) {
+                            StatusStrip(state, dark)
                         HorizontalPager(
                             state = pagerState,
                             // Keeps all four pages composed, so jumping from the first tab to the
@@ -356,6 +388,7 @@ private fun AuroraApp() {
                                     onCheckUpdate = { runUpdateCheck(manual = true) }
                                 )
                             }
+                        }
                         }
                     }
                 }

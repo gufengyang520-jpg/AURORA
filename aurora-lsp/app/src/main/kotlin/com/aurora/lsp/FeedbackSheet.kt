@@ -1,5 +1,6 @@
 package com.aurora.lsp
 
+import top.yukonga.miuix.kmp.basic.Switch
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -41,7 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Switch
 
 private val PROBLEMS = listOf(
     "听不出区别" to "listen",
