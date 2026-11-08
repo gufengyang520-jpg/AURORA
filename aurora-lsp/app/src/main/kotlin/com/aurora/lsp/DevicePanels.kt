@@ -136,8 +136,8 @@ internal fun PanelScaffold(
 internal fun PanelCard(dark: Boolean, content: @Composable ColumnScope.() -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        cornerRadius = 16.dp,
-        insideMargin = PaddingValues(16.dp)
+        cornerRadius = Radius.card,
+        insideMargin = PaddingValues(Space.card)
     ) {
         Column { content() }
     }

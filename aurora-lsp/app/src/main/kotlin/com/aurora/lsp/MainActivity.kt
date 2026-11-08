@@ -58,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -92,9 +93,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Switch
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import com.aurora.lsp.theme.LocalAuroraDarkTheme
@@ -119,15 +124,21 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-internal val Ink = Color(0xFF1A1D22)
-internal val InkDark = Color(0xFFEEF0F3)
-internal val Muted = Color(0xFF6A7180)
-internal val MutedDark = Color(0xFFA8ADB6)
+// Colour roles, read from the theme instead of written as literals.
+//
+// These used to be four hard-coded greys, which is why screens did not share a ramp with the
+// MIUIX surfaces around them. They are now aliases for the theme's own semantic roles, so a screen
+// that still says `if (dark) InkDark else Ink` is automatically correct - both branches resolve to
+// the same role, and only the theme decides the value.
+internal val Ink: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.onSurface
+internal val InkDark: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.onSurface
+internal val Muted: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.onSurfaceVariantSummary
+internal val MutedDark: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.onSurfaceVariantSummary
 /** Live accent: follows whichever palette the user picked in 设置 → 主题. */
 internal val Accent: Color get() = AuroraPalette.accent
 internal val AccentDark: Color get() = AuroraPalette.accentDark
-internal val OkColor = Color(0xFF2E9E63)
-internal val WarnColor = Color(0xFFB07514)
+internal val OkColor: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.primary
+internal val WarnColor: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.error
 
 @Composable
 private fun AuroraApp() {
@@ -253,23 +264,13 @@ private fun AuroraApp() {
                     decor.background = windowBackground
                 }
             }
-            // Two backdrops, because a glass control may only sample a layer that does not
-            // contain itself.
+            // One layer, sampled by the dock.
             //
-            // paintBackdrop holds the page background and nothing else. Controls that sit inside
-            // the pages (LiquidSwitch) sample this one: it is their sibling, so the render tree
-            // never recurses into itself.
-            //
-            // contentBackdrop holds the pages themselves. The dock is outside the pages and reads
-            // this one, which is the whole point - a dock that samples a flat colour has nothing
-            // to blur, so it painted as an opaque slab. Here it samples real text and cards
-            // scrolling underneath, the way the dock is supposed to look.
-            val paintBackdrop = rememberLayerBackdrop()
-            val contentBackdrop = rememberLayerBackdrop()
-            // What the dock samples: the page background first, then the pages drawn on it. One
-            // alone is wrong - the background has no detail, the pages have holes where they are
-            // empty and the dock would go see-through there.
-            val dockBackdrop = rememberCombinedBackdrop(paintBackdrop, contentBackdrop)
+            // The dock is outside the pages, so it can read a layer that holds them without the
+            // render tree ever recursing into itself. Nothing inside the pages samples it: glass in
+            // the content layer is gone along with the custom switch, which is what HIG asks for -
+            // Liquid Glass belongs to the functional layer, not to the cards.
+            val dockBackdrop = rememberLayerBackdrop()
             // Cross-page jumps now sweep with the dock's droplet instead of fading through: the
             // page and the indicator read the same scroll position, so it lands as one movement.
             // Duration grows with distance, otherwise a three-page jump whips past faster than the
@@ -306,47 +307,18 @@ private fun AuroraApp() {
                 Scaffold(
                     // Transparent so the generated background reaches the status bar; the
                     // scaffold used to paint its own surface over it.
-                    containerColor = Color.Transparent,
-                    topBar = {
-                        SmallTopAppBar(title = when (tab) {
-                            0 -> "音效"
-                            1 -> "均衡器"
-                            2 -> "诊断"
-                            else -> "设置"
-                        })
-                    }
+                    containerColor = Color.Transparent
                 ) { inner ->
-                    Box(Modifier.fillMaxSize()) {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .layerBackdrop(paintBackdrop)
-                                .background(MiuixTheme.colorScheme.surface)
-                        ) {
-                            // A whisper of accent at the top, so glass has a gradient to bend. Under 5%,
-                            // otherwise it reads as a coloured page rather than a surface.
-                            Canvas(Modifier.fillMaxSize()) {
-                                drawRect(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(Accent.copy(alpha = if (dark) 0.05f else 0.02f), Color.Transparent),
-                                        center = Offset(size.width * 0.78f, 0f),
-                                        radius = size.width * 0.95f
-                                    )
-                                )
-                            }
-                        }
-
-                        CompositionLocalProvider(LocalLiquidBackdrop provides paintBackdrop) {
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .layerBackdrop(contentBackdrop)
-                                // Only the top is padded: the bottom inset is left to the content so
-                                // the list scrolls underneath the gesture bar instead of stopping
-                                // above it.
-                                .padding(top = inner.calculateTopPadding())
-                        ) {
-                            StatusStrip(state, dark)
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .layerBackdrop(dockBackdrop)
+                            .background(MiuixTheme.colorScheme.surface)
+                            // Only the top is padded: the bottom inset is left to the content so
+                            // the list scrolls underneath the gesture bar instead of stopping
+                            // above it.
+                            .padding(top = inner.calculateTopPadding())
+                    ) {
                         HorizontalPager(
                             state = pagerState,
                             // Keeps all four pages composed, so jumping from the first tab to the
@@ -360,7 +332,6 @@ private fun AuroraApp() {
                                     state = state,
                                     dark = dark,
                                     scope = scope,
-                                    onOpenAssign = { showPresets = true },
                                     onOpenEditor = { creating ->
                                         editorCreating = creating
                                         showEditor = true
@@ -393,6 +364,7 @@ private fun AuroraApp() {
                                     }
                                 )
                                 else -> SettingsPage(
+                                    state = state,
                                     dark = dark,
                                     ui = ui,
                                     versionName = version.name,
@@ -407,8 +379,6 @@ private fun AuroraApp() {
                                     onCheckUpdate = { runUpdateCheck(manual = true) }
                                 )
                             }
-                        }
-                        }
                         }
                     }
                 }
@@ -546,55 +516,37 @@ private fun AuroraApp() {
     }
 }
 
+/**
+ * The engine's own verdict, as a capsule.
+ *
+ * <p>It used to be a loose row of grey text floating above the pager with no anchor, which read as
+ * debris. As a capsule it has a surface, it lives directly under the page title, and it is the same
+ * object on all four pages.
+ */
 @Composable
-private fun StatusStrip(state: AuroraState, dark: Boolean) {
-    val muted = if (dark) MutedDark else Muted
-    val (label, color) = when (state.backendState) {
-        "active" -> "正在生效" to OkColor
-        "selftest" -> "自检中" to OkColor
-        "idle" -> "等待播放" to muted
-        "disabled" -> "已关闭" to muted
-        "panic" -> "已紧急停用" to WarnColor
-        else -> if (state.backendState.endsWith("error")) "写入失败" to WarnColor
-        else "读取中" to muted
+private fun StatusStrip(state: AuroraState) {
+    val colors = MiuixTheme.colorScheme
+    val label: String
+    val tone: Color
+    when (state.backendState) {
+        "active" -> { label = "正在生效"; tone = colors.primary }
+        "selftest" -> { label = "自检中"; tone = colors.primary }
+        "idle" -> { label = "等待播放"; tone = colors.onSurfaceVariantSummary }
+        "disabled" -> { label = "已关闭"; tone = colors.onSurfaceVariantSummary }
+        "panic" -> { label = "已紧急停用"; tone = colors.error }
+        else -> {
+            if (state.backendState.endsWith("error")) {
+                label = "写入失败"; tone = colors.error
+            } else {
+                label = "读取中"; tone = colors.onSurfaceVariantSummary
+            }
+        }
     }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = color)
-        Spacer(Modifier.width(10.dp))
-        Text(
-            buildString {
-                if (state.sessions.isNotEmpty()) append("会话 ").append(state.sessions).append(" · ")
-                append("强度 ").append(state.strength).append("%")
-            },
-            fontSize = 12.sp,
-            color = muted
-        )
+    val readings = buildString {
+        if (state.sessions.isNotEmpty()) append("会话 ").append(state.sessions).append(" · ")
+        append("强度 ").append(state.strength).append("%")
     }
-}
-
-@Composable
-private fun PageList(content: @Composable () -> Unit) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        // The dock floats over the list, so the last card needs enough room to clear it plus the
-        // gesture bar underneath.
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 116.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item { content() }
-    }
+    StatusCapsule(label = label, tone = tone, readings = readings)
 }
 
 @Composable
@@ -604,128 +556,121 @@ private fun TonePage(
     scope: kotlinx.coroutines.CoroutineScope,
     onOpenPresets: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
-
-    PageList {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("叠加调音", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = ink)
-                        Text(
-                            if (state.enabled) "已开启，正在叠加曲线" else "已关闭，音频走原厂链路",
-                            fontSize = 12.sp, color = muted
-                        )
-                    }
-                    LiquidSwitch(checked = state.enabled, onCheckedChange = { value ->
-                        scope.launch { state.update(newEnabled = value) }
-                    })
-                }
-            }
-
-            SectionCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("当前预设", fontSize = 12.sp, color = muted, modifier = Modifier.weight(1f))
-                    Text("强度 ${state.strength}%", fontSize = 12.sp, color = muted)
-                }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    Presets.NAMES[state.presetIndex],
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ink
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    Presets.NOTES[state.presetIndex],
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    color = muted
-                )
-                Spacer(Modifier.height(12.dp))
-                CurvePreview(state.curve, accent, muted, showScale = true)
-                Spacer(Modifier.height(4.dp))
-                BandScale(muted)
-            }
-
-            GroupLabel("按应用分配", muted)
-            SectionCard {
-                Row(
-                    Modifier.fillMaxWidth().clickable { onOpenPresets() },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (state.appMap.isEmpty()) "还没有单独分配"
-                            else state.appMap.size.toString() + " 个应用使用自己的预设",
-                            fontSize = 14.sp,
-                            color = ink
-                        )
-                        Text(
-                            if (state.userPresets.isEmpty()) "也可以在这里保存并命名自己的曲线"
-                            else "已保存 " + state.userPresets.size + " 套自己的预设",
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
-                            color = muted
-                        )
-                    }
-                    Text("管理", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
-                }
-            }
-
-            GroupLabel("快速切换", muted)
-            SectionCard {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(2, 3, 4, 5).forEach { index ->
-                        val selected = index == state.presetIndex
-                        Box(
-                            Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    when {
-                                        selected && dark -> accent.copy(alpha = 0.18f)
-                                        selected -> accent.copy(alpha = 0.10f)
-                                        dark -> Color(0xFF23262D)
-                                        else -> Color(0xFFF4F6F9)
-                                    }
-                                )
-                                .clickable {
-                                    scope.launch { state.update(newPreset = Presets.KEYS[index]) }
-                                }
-                                .padding(vertical = 11.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                Presets.NAMES[index],
-                                fontSize = 11.sp,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = if (selected) accent else ink,
-                                maxLines = 1,
-                                softWrap = false
-                            )
+    val colors = MiuixTheme.colorScheme
+    AuroraPage(
+        title = "音效",
+        subtitle = "选一个声音。改完立刻生效，关掉就回原厂。",
+        underTitle = { StatusStrip(state) }
+    ) {
+        AuroraGroup {
+            AuroraRow(
+                title = "叠加调音",
+                summary = if (state.enabled) "已开启，曲线正挂在播放中的会话上" else "已关闭，音频走原厂链路",
+                trailing = {
+                    Switch(
+                        checked = state.enabled,
+                        onCheckedChange = { value ->
+                            scope.launch { state.update(newEnabled = value) }
                         }
+                    )
+                }
+            )
+        }
+
+        AuroraGroup("当前曲线") {
+            Column(Modifier.padding(Space.card)) {
+                androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            Presets.NAMES[state.presetIndex],
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = colors.onSurface
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            Presets.NOTES[state.presetIndex],
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = colors.onSurfaceVariantSummary
+                        )
                     }
                 }
-            }
-
-            SectionCard {
-                Text(
-                    "曲线只挂在正在播放的会话上：暂停或切歌时不会有叠加，播放恢复后自动接上。" +
-                        "想逐段细调就到均衡页。",
-                    fontSize = 12.sp,
-                    lineHeight = 19.sp,
-                    color = muted
+                Spacer(Modifier.height(14.dp))
+                CurvePreview(
+                    state.curve,
+                    colors.primary,
+                    colors.dividerLine,
+                    showScale = true
                 )
-            }
-
-            if (state.error != null) {
-                SectionCard { Text(state.error!!, fontSize = 13.sp, color = WarnColor) }
             }
         }
+
+        AuroraGroup("预设") {
+            Presets.KEYS.forEachIndexed { index, key ->
+                val selected = index == state.presetIndex
+                if (index > 0) RowDivider()
+                AuroraRow(
+                    title = Presets.NAMES[index],
+                    summary = Presets.NOTES[index],
+                    leading = {
+                        EqGlyph(
+                            curve = Presets.curve(index),
+                            color = if (selected) colors.primary else colors.onSurfaceVariantSummary
+                        )
+                    },
+                    trailing = {
+                        if (selected) CheckMark()
+                    },
+                    onClick = { scope.launch { state.update(newPreset = key) } }
+                )
+            }
+            state.userPresets.forEach { preset ->
+                val selected = preset.id == state.preset
+                RowDivider()
+                AuroraRow(
+                    title = preset.name,
+                    summary = bandSummary(preset.curve),
+                    leading = {
+                        EqGlyph(
+                            curve = preset.curve,
+                            color = if (selected) colors.primary else colors.onSurfaceVariantSummary
+                        )
+                    },
+                    trailing = { if (selected) CheckMark() },
+                    onClick = {
+                        scope.launch { state.update(newCurve = preset.curve, newPreset = "custom") }
+                    }
+                )
+            }
+            RowDivider()
+            AuroraRow(
+                title = "管理预设",
+                summary = "按应用分配，或把手上这条存下来命名",
+                trailing = { ValueText("管理", accent = true) },
+                onClick = onOpenPresets
+            )
+        }
+
+        AuroraGroup("声场与响度") {
+            AdvancedSettingsPanel(state = state, dark = dark, scope = scope)
+        }
+
+        if (state.error != null) {
+            AuroraGroup { NoteText(state.error!!, error = true) }
+        }
     }
+}
+
+/** The selected mark. One size, one colour, only where something is chosen. */
+@Composable
+private fun CheckMark() {
+    Icon(
+        imageVector = Icons.Filled.Check,
+        contentDescription = null,
+        tint = MiuixTheme.colorScheme.primary,
+        modifier = Modifier.size(20.dp)
+    )
 }
 
 @Composable
@@ -738,34 +683,57 @@ internal fun CurvePreview(
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (showScale) 132.dp else 96.dp)
+            .height(if (showScale) 116.dp else 84.dp)
     ) {
         val w = size.width
         val h = size.height
         val mid = h / 2f
-        val inset = 4f
-        if (showScale) {
-            val faint = grid.copy(alpha = 0.16f)
-            drawLine(faint, Offset(0f, inset), Offset(w, inset), strokeWidth = 1f)
-            drawLine(grid.copy(alpha = 0.30f), Offset(0f, mid), Offset(w, mid), strokeWidth = 1f)
-            drawLine(faint, Offset(0f, h - inset), Offset(w, h - inset), strokeWidth = 1f)
-        } else {
-            drawLine(grid.copy(alpha = 0.30f), Offset(0f, mid), Offset(w, mid), strokeWidth = 1f)
-        }
-        val step = w / (curve.size - 1).coerceAtLeast(1)
+        val inset = 3f
         val usable = h / 2f - inset
-        val path = Path()
-        curve.forEachIndexed { index, db ->
-            val x = step * index
-            val y = mid - (db / 12f) * usable
-            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        val step = w / (curve.size - 1).coerceAtLeast(1)
+
+        // Horizontal grid at +12 / +6 / 0 / -6 / -12. The zero line is the one that matters: it is
+        // what tells a cut from a boost at a glance.
+        val faint = grid.copy(alpha = 0.5f)
+        listOf(1f, 0.5f, 0f, -0.5f, -1f).forEach { level ->
+            val y = mid - level * usable
+            drawLine(
+                color = if (level == 0f) grid else faint,
+                start = Offset(0f, y),
+                end = Offset(w, y),
+                strokeWidth = if (level == 0f) 1.2f else 0.8f
+            )
         }
-        drawPath(path, accent, style = Stroke(width = 3f, cap = StrokeCap.Round))
-        curve.forEachIndexed { index, db ->
+        // One vertical tick per band, so the curve lines up with the labels underneath.
+        curve.indices.forEach { index ->
             val x = step * index
-            val y = mid - (db / 12f) * usable
-            drawCircle(accent, radius = 3.5f, center = Offset(x, y))
+            drawLine(
+                color = faint.copy(alpha = 0.35f),
+                start = Offset(x, inset),
+                end = Offset(x, h - inset),
+                strokeWidth = 0.8f
+            )
         }
+
+        val points = curve.mapIndexed { index, db ->
+            Offset(step * index, mid - (db / 12f) * usable)
+        }
+
+        // Area between the curve and zero: gives the shape weight without adding a second colour.
+        val area = Path().apply {
+            moveTo(points.first().x, mid)
+            points.forEach { lineTo(it.x, it.y) }
+            lineTo(points.last().x, mid)
+            close()
+        }
+        drawPath(area, accent.copy(alpha = 0.14f))
+
+        val line = Path().apply {
+            moveTo(points.first().x, points.first().y)
+            points.drop(1).forEach { lineTo(it.x, it.y) }
+        }
+        drawPath(line, accent, style = Stroke(width = 2.4f, cap = StrokeCap.Round))
+        points.forEach { drawCircle(accent, radius = 3.2f, center = it) }
     }
 }
 
@@ -797,170 +765,88 @@ private fun EqPage(
     state: AuroraState,
     dark: Boolean,
     scope: kotlinx.coroutines.CoroutineScope,
-    onOpenAssign: () -> Unit,
     onOpenEditor: (Boolean) -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val colors = MiuixTheme.colorScheme
+    var strengthDraft by remember(state.strength) { mutableStateOf(state.strength.toFloat()) }
 
-    PageList {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            GroupLabel("预设", muted)
-            SectionCard {
-                Presets.KEYS.indices.chunked(3).forEach { cells ->
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        cells.forEach { index ->
-                            PresetCell(
-                                index = index,
-                                selected = index == state.presetIndex,
-                                dark = dark,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                scope.launch { state.update(newPreset = Presets.KEYS[index]) }
-                            }
-                        }
-                        repeat(3 - cells.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
-
-                if (state.userPresets.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    Box(
-                        Modifier.fillMaxWidth().height(1.dp)
-                            .background(muted.copy(alpha = 0.22f))
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text("我的预设", fontSize = 12.sp, color = muted)
-                    state.userPresets.chunked(3).forEach { cells ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            cells.forEach { preset ->
-                                UserPresetCell(
-                                    preset = preset,
-                                    selected = preset.id == state.preset,
-                                    dark = dark,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    scope.launch {
-                                        state.update(newCurve = preset.curve, newPreset = "custom")
-                                    }
-                                }
-                            }
-                            repeat(3 - cells.size) { Spacer(Modifier.weight(1f)) }
-                        }
-                    }
-                }
+    AuroraPage(
+        title = "均衡器",
+        subtitle = "六段曲线，拖到听着舒服为止。",
+        underTitle = { StatusStrip(state) }
+    ) {
+        AuroraGroup("曲线") {
+            Column(Modifier.padding(Space.card)) {
+                CurvePreview(state.curve, colors.primary, colors.dividerLine, showScale = true)
+                Spacer(Modifier.height(6.dp))
+                BandScale(colors.onSurfaceVariantSummary)
             }
+        }
 
-            GroupLabel("声场与响度", muted)
-            SectionCard {
-                AdvancedSettingsPanel(state = state, dark = dark, scope = scope)
-            }
-
-            GroupLabel("按应用分配 EQ", muted)
-            SectionCard {
-                EntryRow(
-                    title = if (state.appMap.isEmpty()) "还没有单独分配"
-                    else state.appMap.size.toString() + " 个应用使用自己的预设",
-                    detail = "指定之后，那个应用播放时不受全局预设影响",
-                    action = "管理",
-                    dark = dark,
-                    onClick = onOpenAssign
-                )
-            }
-
-            GroupLabel("自定义曲线", muted)
-            SectionCard {
-                CurvePreview(state.curve, accent, muted, showScale = true)
-                Spacer(Modifier.height(4.dp))
-                BandScale(muted)
-                Spacer(Modifier.height(10.dp))
-                EntryRow(
-                    title = "调整这条曲线",
-                    detail = "拖动六个频段，改完立即生效",
-                    action = "编辑",
-                    dark = dark,
-                    onClick = { onOpenEditor(false) }
-                )
-            }
-
-            GroupLabel("创建新 EQ", muted)
-            SectionCard {
-                EntryRow(
-                    title = "新建一条曲线",
-                    detail = "拖完起个名字，留在「我的预设」里",
-                    action = "新建",
-                    dark = dark,
-                    onClick = { onOpenEditor(true) }
-                )
-            }
-
-            GroupLabel("强度", muted)
-            SectionCard {
-                StepSettingRow(
-                    title = "叠加强度",
-                    detail = "整条曲线一起按比例缩放，100% 就是预设本来的样子。",
-                    valueLabel = "${state.strength}%",
-                    steps = listOf(20f, 40f, 60f, 80f, 100f),
-                    current = state.strength.toFloat(),
+        AuroraGroup("六个频段") {
+            AudioEq.BAND_HZ.forEachIndexed { index, hz ->
+                if (index > 0) RowDivider()
+                BandRow(
+                    label = bandLabel(hz),
+                    value = state.curve[index],
                     dark = dark
-                ) { picked ->
-                    scope.launch { state.update(newStrength = picked.toInt()) }
+                ) { value ->
+                    scope.launch {
+                        state.update(newCurve = state.curve.copyOf().also { it[index] = value })
+                    }
                 }
             }
+        }
+
+        AuroraGroup("强度") {
+            Column(Modifier.padding(horizontal = Space.card, vertical = Space.rowV)) {
+                androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("叠加强度", fontSize = 15.sp, color = colors.onSurface)
+                        Text(
+                            "整条曲线一起按比例缩放，100% 就是预设本来的样子。",
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            color = colors.onSurfaceVariantSummary
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    ValueText(strengthDraft.toInt().toString() + "%", accent = true)
+                }
+                Slider(
+                    value = strengthDraft,
+                    onValueChange = { strengthDraft = it },
+                    valueRange = 0f..100f,
+                    steps = 19,
+                    onValueChangeFinished = {
+                        scope.launch { state.update(newStrength = strengthDraft.toInt()) }
+                    },
+                    height = 36.dp,
+                    colors = auroraSliderColors(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        AuroraGroup {
+            AuroraRow(
+                title = "恢复自存曲线",
+                summary = "回到上次保存下来的那条",
+                trailing = { ValueText("恢复", accent = true) },
+                onClick = { scope.launch { state.restoreSaved() } }
+            )
+            RowDivider()
+            AuroraRow(
+                title = "存为新预设",
+                summary = "给现在这条曲线起个名字，留在「我的预设」里",
+                trailing = { ValueText("保存", accent = true) },
+                onClick = { onOpenEditor(true) }
+            )
         }
     }
 }
 
 /** A saved curve in the preset grid, below the divider. */
-@Composable
-private fun UserPresetCell(
-    preset: AuroraState.UserPreset,
-    selected: Boolean,
-    dark: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
-
-    Column(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                when {
-                    selected && dark -> accent.copy(alpha = 0.20f)
-                    selected -> accent.copy(alpha = 0.12f)
-                    dark -> Color(0xFF23262D)
-                    else -> Color(0xFFF4F6F9)
-                }
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp)
-    ) {
-        Text(
-            preset.name,
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-            color = if (selected) accent else ink,
-            maxLines = 1
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            bandSummary(preset.curve),
-            fontSize = 10.sp,
-            color = muted,
-            maxLines = 1
-        )
-    }
-}
 
 /** One tappable line that leads somewhere: an entry point, not a setting. */
 @Composable
@@ -971,19 +857,12 @@ private fun EntryRow(
     dark: Boolean,
     onClick: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 14.sp, color = ink)
-            Text(detail, fontSize = 11.sp, lineHeight = 16.sp, color = muted)
-        }
-        Text(action, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
-    }
+    AuroraRow(
+        title = title,
+        summary = detail,
+        trailing = { ValueText(action, accent = true) },
+        onClick = onClick
+    )
 }
 
 internal fun bandSummary(curve: FloatArray): String =
@@ -993,90 +872,40 @@ internal fun bandSummary(curve: FloatArray): String =
     }
 
 @Composable
-internal fun PresetCell(
-    index: Int,
-    selected: Boolean,
-    dark: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    val accent = if (dark) AccentDark else Accent
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    Column(
-        modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                when {
-                    selected && dark -> accent.copy(alpha = 0.18f)
-                    selected -> accent.copy(alpha = 0.10f)
-                    dark -> Color(0xFF23262D)
-                    else -> Color(0xFFF4F6F9)
-                }
-            )
-            .clickable { onClick() }
-            .padding(horizontal = 9.dp, vertical = 9.dp)
-    ) {
-        Text(
-            Presets.NAMES[index],
-            fontSize = 12.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) accent else ink,
-            maxLines = 1
-        )
-        Spacer(Modifier.height(5.dp))
-        MiniCurve(
-            curve = Presets.curve(index),
-            color = if (selected) accent else muted.copy(alpha = 0.7f),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(18.dp)
-        )
-    }
-}
-
-@Composable
-private fun MiniCurve(curve: FloatArray, color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val w = size.width
-        val h = size.height
-        if (w <= 0f || h <= 0f) return@Canvas
-        val mid = h / 2f
-        val step = w / (curve.size - 1).coerceAtLeast(1)
-        val path = Path()
-        curve.forEachIndexed { i, db ->
-            val x = step * i
-            val y = mid - (db / 12f) * (h / 2f - 1f)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        drawPath(path, color, style = Stroke(width = 1.6f, cap = StrokeCap.Round))
-    }
-}
-@Composable
 internal fun BandRow(
     label: String,
     value: Float,
     dark: Boolean,
     onChange: (Float) -> Unit
 ) {
-    Column(Modifier.fillMaxWidth()) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = Space.card, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 label,
-                fontSize = 13.sp,
-                color = if (dark) MutedDark else Muted,
+                fontSize = 15.sp,
+                color = MiuixTheme.colorScheme.onSurface,
                 modifier = Modifier.width(56.dp)
             )
+            Spacer(Modifier.weight(1f))
             Text(
                 String.format(java.util.Locale.US, "%+.1f dB", value),
                 fontSize = 13.sp,
-                color = if (dark) InkDark else Ink
+                fontWeight = FontWeight.Medium,
+                color = if (kotlin.math.abs(value) < 0.05f) {
+                    MiuixTheme.colorScheme.onSurfaceVariantSummary
+                } else {
+                    MiuixTheme.colorScheme.primary
+                }
             )
         }
         Slider(
             value = value,
             onValueChange = onChange,
-            valueRange = -12f..12f
+            valueRange = -12f..12f,
+            steps = 23,
+            // The thumb is drawn wider than the default layout height and bled into the row below.
+            height = 36.dp,
+            colors = auroraSliderColors()
         )
     }
 }
@@ -1121,8 +950,12 @@ private fun DiagPage(
             "六段参数都能写入。如果愿意，可以把这台机器的链路档案发回，作者做适配时会拿来对照。"
     }
 
-    PageList {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    AuroraPage(
+        title = "诊断",
+        subtitle = "出问题时，这一页要能替你说话。",
+        underTitle = { StatusStrip(state) }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.group)) {
             SectionCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
@@ -1196,8 +1029,7 @@ private fun DiagPage(
                 )
             }
 
-            GroupLabel("实际写入", muted)
-            SectionCard {
+            AuroraGroup("实际写入") {
                 val bands = state.actualBands
                 if (bands != null) {
                     CurvePreview(bands, accent, muted, showScale = true)
@@ -1219,8 +1051,7 @@ private fun DiagPage(
                 }
             }
 
-            GroupLabel("系统回执", muted)
-            SectionCard {
+            AuroraGroup("系统回执") {
                 Row {
                     ReceiptCell("后端状态", state.backendState.ifEmpty { "—" }, dark, Modifier.weight(1f))
                     ReceiptCell("生效会话", state.applied.ifEmpty { "0" }, dark, Modifier.weight(1f))
@@ -1239,8 +1070,7 @@ private fun DiagPage(
                 )
             }
 
-            GroupLabel("运行日志", muted)
-            SectionCard {
+            AuroraGroup("运行日志") {
                 if (state.engineLog.isEmpty()) {
                     Text(
                         "还没有日志。播一段音频、切一次预设，这里就会出现最近 50 条状态变化。",
@@ -1283,6 +1113,7 @@ private fun ReceiptCell(
 
 @Composable
 private fun SettingsPage(
+    state: AuroraState,
     dark: Boolean,
     ui: UiPrefs,
     versionName: String,
@@ -1300,10 +1131,13 @@ private fun SettingsPage(
     val muted = if (dark) MutedDark else Muted
     val accent = if (dark) AccentDark else Accent
 
-    PageList {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            GroupLabel("外观", muted)
-            SectionCard {
+    AuroraPage(
+        title = "设置",
+        subtitle = "外观、更新、反馈，都在这。",
+        underTitle = { StatusStrip(state = state) }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(Space.group)) {
+            AuroraGroup("外观") {
                 listOf(
                     "system" to "跟随系统",
                     "light" to "浅色",
@@ -1313,8 +1147,7 @@ private fun SettingsPage(
                 }
             }
 
-            GroupLabel("主题", muted)
-            SectionCard {
+            AuroraGroup("主题") {
                 EntryRow(
                     title = "管理主题",
                     detail = "当前：" + AuroraPalette.nameOf(AuroraPalette.currentId),
@@ -1324,8 +1157,7 @@ private fun SettingsPage(
                 )
             }
 
-            GroupLabel("交互", muted)
-            SectionCard {
+            AuroraGroup("交互") {
                 ToggleRow(
                     title = "预测性返回",
                     detail = "侧滑时页面跟随手指收缩",
@@ -1342,8 +1174,7 @@ private fun SettingsPage(
                 )
             }
 
-            GroupLabel("设备", muted)
-            SectionCard {
+            AuroraGroup("设备") {
                 Row(
                     Modifier.clickable { onOpenDevice() },
                     verticalAlignment = Alignment.CenterVertically
@@ -1362,8 +1193,7 @@ private fun SettingsPage(
                 }
             }
 
-            GroupLabel("更新", muted)
-            SectionCard {
+            AuroraGroup("更新") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("当前版本", fontSize = 14.sp, color = ink)
@@ -1396,8 +1226,7 @@ private fun SettingsPage(
                 }
             }
 
-            GroupLabel("反馈", muted)
-            SectionCard {
+            AuroraGroup("反馈") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("反馈问题", fontSize = 14.sp, color = ink)
@@ -1421,11 +1250,13 @@ private fun SettingsPage(
                 }
             }
 
-            GroupLabel("创作者", muted)
-            SectionCard { CreatorCard(dark) }
+            AuroraGroup("创作者") {
+                CreatorCard(dark)
+            }
 
-            GroupLabel("关于", muted)
-            SectionCard { ProgramCard(dark, versionName) }
+            AuroraGroup("关于") {
+                ProgramCard(dark, versionName)
+            }
 
             SectionCard {
                 Text("开源声明", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = ink)
@@ -1443,17 +1274,6 @@ private fun SettingsPage(
 }
 
 @Composable
-private fun GroupLabel(text: String, color: Color) {
-    Text(
-        text,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Medium,
-        color = color,
-        modifier = Modifier.padding(start = 4.dp, top = 8.dp)
-    )
-}
-
-@Composable
 private fun ToggleRow(
     title: String,
     detail: String,
@@ -1461,18 +1281,11 @@ private fun ToggleRow(
     dark: Boolean,
     onChange: (Boolean) -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 14.sp, color = if (dark) InkDark else Ink)
-            Text(detail, fontSize = 11.sp, color = if (dark) MutedDark else Muted)
-        }
-        LiquidSwitch(checked = checked, onCheckedChange = onChange)
-    }
+    AuroraRow(
+        title = title,
+        summary = detail,
+        trailing = { Switch(checked = checked, onCheckedChange = onChange) }
+    )
 }
 
 
@@ -1602,37 +1415,26 @@ private fun openUrl(context: Context, url: String) {
 
 @Composable
 private fun SelectRow(label: String, selected: Boolean, dark: Boolean, onClick: () -> Unit) {
-    val accent = if (dark) AccentDark else Accent
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            label,
-            fontSize = 14.sp,
-            color = if (selected) accent else (if (dark) InkDark else Ink),
-            modifier = Modifier.weight(1f)
-        )
-        if (selected) Text("✓", fontSize = 15.sp, color = accent)
-    }
+    AuroraRow(
+        title = label,
+        trailing = { if (selected) CheckMark() },
+        onClick = onClick
+    )
 }
 
 @Composable
 private fun SectionCard(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+    val colors = MiuixTheme.colorScheme
     val modifier = if (onClick != null) {
-        Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
+        Modifier.fillMaxWidth().clickable { onClick() }
     } else {
         Modifier.fillMaxWidth()
     }
     Card(
         modifier = modifier,
-        cornerRadius = 16.dp,
-        insideMargin = PaddingValues(16.dp)
+        cornerRadius = Radius.card,
+        insideMargin = PaddingValues(Space.card),
+        colors = CardDefaults.defaultColors(color = colors.surfaceContainer)
     ) {
         Column { content() }
     }
