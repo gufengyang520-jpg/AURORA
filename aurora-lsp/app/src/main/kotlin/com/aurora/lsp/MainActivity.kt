@@ -580,7 +580,6 @@ private fun TonePage(
     val colors = MiuixTheme.colorScheme
     AuroraPage(
         title = "音效",
-        subtitle = "选一个声音。改完立刻生效，关掉就回原厂。",
         underTitle = { StatusStrip(state) }
     ) {
         AuroraGroup {
@@ -826,7 +825,6 @@ private fun EqPage(
 
     AuroraPage(
         title = "均衡器",
-        subtitle = "六段曲线，拖到听着舒服为止。",
         underTitle = { StatusStrip(state) }
     ) {
         AuroraGroup("曲线") {
@@ -1024,7 +1022,6 @@ private fun DiagPage(
 
     AuroraPage(
         title = "诊断",
-        subtitle = "出问题时，这一页要能替你说话。",
         underTitle = { StatusStrip(state) }
     ) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.group)) {
@@ -1211,7 +1208,6 @@ private fun SettingsPage(
 
     AuroraPage(
         title = "设置",
-        subtitle = "外观、更新、反馈，都在这。",
         underTitle = { StatusStrip(state = state) }
     ) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.group)) {

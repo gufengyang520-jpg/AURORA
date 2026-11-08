@@ -89,11 +89,14 @@ internal object Radius {
 /**
  * One page: same margins, same title, same scroll rhythm, so switching tabs is not a change of
  * style.
+ *
+ * <p>No subtitle. Each page used to carry a one-line summary under its title, and every one of them
+ * was a sentence the app did not need: the title already says what the page is, and the first group
+ * says what it does. The parameter is gone rather than left empty so it cannot creep back.
  */
 @Composable
 internal fun AuroraPage(
     title: String,
-    subtitle: String? = null,
     underTitle: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -126,7 +129,7 @@ internal fun AuroraPage(
                         translationY = (1f - appear.value) * 12.dp.toPx()
                     }
             ) {
-                PageTitle(title, subtitle)
+                PageTitle(title)
                 if (underTitle != null) {
                     Spacer(Modifier.height(16.dp))
                     Column(Modifier.fillMaxWidth(), content = underTitle)
@@ -142,20 +145,14 @@ internal fun AuroraPage(
 }
 
 @Composable
-internal fun PageTitle(title: String, subtitle: String?) {
-    val colors = MiuixTheme.colorScheme
-    Column(Modifier.fillMaxWidth()) {
-        Text(title, fontSize = 30.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
-        if (subtitle != null) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                subtitle,
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
-                color = colors.onSurfaceVariantSummary
-            )
-        }
-    }
+internal fun PageTitle(title: String) {
+    Text(
+        title,
+        fontSize = 30.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = MiuixTheme.colorScheme.onSurface,
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 /**
