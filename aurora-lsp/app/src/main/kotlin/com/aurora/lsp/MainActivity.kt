@@ -578,6 +578,13 @@ private fun TonePage(
     onOpenPresets: () -> Unit
 ) {
     val colors = MiuixTheme.colorScheme
+    // A hand-edited curve has no preset to name. Saying "原厂平直" there was a lie the screen told
+    // whenever a band had been touched, because looking up "custom" lands on index 0.
+    val isCustom = state.preset == "custom"
+    val currentTitle = if (isCustom) "自定义曲线" else Presets.NAMES[state.presetIndex]
+    val currentNote =
+        if (isCustom) "六个频段被手动改过，不对应任何预设。"
+        else Presets.NOTES[state.presetIndex]
     AuroraPage(
         title = "音效",
         underTitle = { StatusStrip(state) }
@@ -602,14 +609,14 @@ private fun TonePage(
                 androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            Presets.NAMES[state.presetIndex],
+                            currentTitle,
                             fontSize = 22.sp,
                             fontWeight = FontWeight.Medium,
                             color = colors.onSurface
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            Presets.NOTES[state.presetIndex],
+                            currentNote,
                             fontSize = 12.sp,
                             lineHeight = 17.sp,
                             color = colors.onSurfaceVariantSummary
@@ -628,7 +635,7 @@ private fun TonePage(
 
         AuroraGroup("预设") {
             Presets.KEYS.forEachIndexed { index, key ->
-                val selected = index == state.presetIndex
+                val selected = !isCustom && index == state.presetIndex
                 if (index > 0) RowDivider()
                 AuroraRow(
                     title = Presets.NAMES[index],
@@ -822,6 +829,10 @@ private fun EqPage(
     // every pixel meant a su shell round trip per frame, and the thumb only moved once the write
     // came back - which is exactly what "拖不动" felt like.
     var draftCurve by remember(state.curve) { mutableStateOf(state.curve) }
+    // What "default" means for a band: the value the chosen preset gives it. "custom" has no
+    // reference to return to, so in that case there is no affordance at all rather than a jump to 0.
+    val bandDefaults: FloatArray? =
+        if (state.preset == "custom") null else Presets.curve(state.presetIndex).copyOf()
 
     AuroraPage(
         title = "均衡器",
@@ -841,6 +852,7 @@ private fun EqPage(
                 BandRow(
                     label = bandLabel(hz),
                     value = draftCurve[index],
+                    default = bandDefaults?.get(index),
                     onValueChange = { value ->
                         draftCurve = draftCurve.copyOf().also { it[index] = value }
                     },
@@ -864,6 +876,13 @@ private fun EqPage(
                         )
                     }
                     Spacer(Modifier.width(12.dp))
+                    ResetAffordance(
+                        visible = kotlin.math.abs(strengthDraft - 100f) > 0.5f,
+                        description = "恢复默认 100%"
+                    ) {
+                        strengthDraft = 100f
+                        scope.launch { state.update(newStrength = 100) }
+                    }
                     ValueText(strengthDraft.toInt().toString() + "%", accent = true)
                 }
                 Slider(
@@ -881,6 +900,18 @@ private fun EqPage(
         }
 
         AuroraGroup {
+            if (bandDefaults != null) {
+                AuroraRow(
+                    title = "恢复预设原值",
+                    summary = "六个频段一起放回「" + Presets.NAMES[state.presetIndex] + "」的值",
+                    trailing = { ValueText("恢复", accent = true) },
+                    onClick = {
+                        draftCurve = bandDefaults.copyOf()
+                        scope.launch { state.update(newCurve = bandDefaults.copyOf()) }
+                    }
+                )
+                RowDivider()
+            }
             AuroraRow(
                 title = "恢复自存曲线",
                 summary = "回到上次保存下来的那条",
@@ -944,6 +975,8 @@ internal fun bandSummary(curve: FloatArray): String =
 internal fun BandRow(
     label: String,
     value: Float,
+    /** What this band should be for the current preset, or null when there is nothing to return to. */
+    default: Float?,
     onValueChange: (Float) -> Unit,
     onCommit: () -> Unit
 ) {
@@ -956,6 +989,15 @@ internal fun BandRow(
                 modifier = Modifier.width(56.dp)
             )
             Spacer(Modifier.weight(1f))
+            if (default != null) {
+                ResetAffordance(
+                    visible = kotlin.math.abs(value - default) > 0.05f,
+                    description = "恢复默认 " + String.format(java.util.Locale.US, "%+.1f dB", default)
+                ) {
+                    onValueChange(default)
+                    onCommit()
+                }
+            }
             Text(
                 String.format(java.util.Locale.US, "%+.1f dB", value),
                 fontSize = 13.sp,

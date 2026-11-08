@@ -1,9 +1,14 @@
 package com.aurora.lsp
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -36,7 +41,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -100,6 +110,11 @@ internal fun AuroraPage(
     underTitle: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // Split screen and freeform windows halve the height. A 30sp title, 24dp between groups and
+    // 132dp of clearance under the dock is right on a full screen and eats the first screenful in a
+    // half-height one, so the whole rhythm steps down together instead of just cropping.
+    val compact = LocalConfiguration.current.screenHeightDp < 600
+    val groupGap = if (compact) 16.dp else Space.group
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -107,7 +122,7 @@ internal fun AuroraPage(
             end = Space.page,
             top = 8.dp,
             // The dock floats over the list; the last group needs room to clear it.
-            bottom = 132.dp
+            bottom = if (compact) 96.dp else 132.dp
         )
     ) {
         item {
@@ -129,15 +144,15 @@ internal fun AuroraPage(
                         translationY = (1f - appear.value) * 12.dp.toPx()
                     }
             ) {
-                PageTitle(title)
+                PageTitle(title, compact = compact)
                 if (underTitle != null) {
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(if (compact) 10.dp else 16.dp))
                     Column(Modifier.fillMaxWidth(), content = underTitle)
                 }
-                Spacer(Modifier.height(Space.group))
+                Spacer(Modifier.height(groupGap))
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(Space.group)
+                    verticalArrangement = Arrangement.spacedBy(groupGap)
                 ) { content() }
             }
         }
@@ -145,10 +160,10 @@ internal fun AuroraPage(
 }
 
 @Composable
-internal fun PageTitle(title: String) {
+internal fun PageTitle(title: String, compact: Boolean = false) {
     Text(
         title,
-        fontSize = 30.sp,
+        fontSize = if (compact) 24.sp else 30.sp,
         fontWeight = FontWeight.SemiBold,
         color = MiuixTheme.colorScheme.onSurface,
         modifier = Modifier.fillMaxWidth()
@@ -369,4 +384,84 @@ internal fun ValueText(text: String, accent: Boolean = false) {
         maxLines = 1,
         softWrap = false
     )
+}
+
+/**
+ * The way back to a slider's default.
+ *
+ * <p>Only present while the value actually differs from its default, so a slider sitting at its
+ * default looks exactly as it did before this existed. That is the whole point: an affordance that
+ * is always on screen for a case that is usually not true is just clutter.
+ *
+ * <p>Drawn rather than imported - a 272° arc with two barbs - because the app already speaks in
+ * marks it draws itself, and a fourth icon set for one glyph is not worth a dependency.
+ */
+@Composable
+internal fun ResetAffordance(
+    visible: Boolean,
+    description: String,
+    onClick: () -> Unit
+) {
+    val mark = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(160)) + scaleIn(initialScale = 0.7f, animationSpec = tween(160)),
+        exit = fadeOut(tween(110)) + scaleOut(targetScale = 0.7f, animationSpec = tween(110))
+    ) {
+        androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clickable(onClick = onClick)
+                    .semantics { contentDescription = description },
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(Modifier.size(14.dp)) {
+                    val stroke = 1.35.dp.toPx()
+                    val radius = size.minDimension / 2f - stroke * 0.6f
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val startDeg = 120f
+                    // A wider gap than a plain three-quarters turn: it gives the barb room to read
+                    // as an arrow instead of curling back into the arc.
+                    val sweepDeg = 250f
+                    drawArc(
+                        color = mark,
+                        startAngle = startDeg,
+                        sweepAngle = sweepDeg,
+                        useCenter = false,
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                        topLeft = Offset(center.x - radius, center.y - radius),
+                        size = Size(radius * 2f, radius * 2f)
+                    )
+                    // Barbs at the end of the arc, pointing backwards along the travel direction.
+                    val endRad = Math.toRadians((startDeg + sweepDeg).toDouble())
+                    val end = Offset(
+                        center.x + (kotlin.math.cos(endRad) * radius).toFloat(),
+                        center.y + (kotlin.math.sin(endRad) * radius).toFloat()
+                    )
+                    val tangent = Offset(
+                        (-kotlin.math.sin(endRad)).toFloat(),
+                        kotlin.math.cos(endRad).toFloat()
+                    )
+                    val barb = 5.2.dp.toPx()
+                    listOf(0.95f, -0.95f).forEach { angle ->
+                        val c = kotlin.math.cos(angle)
+                        val s = kotlin.math.sin(angle)
+                        val dir = Offset(
+                            -(tangent.x * c - tangent.y * s),
+                            -(tangent.x * s + tangent.y * c)
+                        )
+                        drawLine(
+                            color = mark,
+                            start = end,
+                            end = Offset(end.x + dir.x * barb, end.y + dir.y * barb),
+                            strokeWidth = stroke,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+        }
+    }
 }

@@ -126,6 +126,8 @@ fun EqEditorPanel(
                 BandRow(
                     label = bandLabel(hz),
                     value = curve[index],
+                    // Building a curve has no reference value per band, so no reset mark here.
+                    default = null,
                     onValueChange = { value ->
                         curve = curve.copyOf().also { it[index] = value }
                     },

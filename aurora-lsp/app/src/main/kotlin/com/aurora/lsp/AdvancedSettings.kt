@@ -92,6 +92,11 @@ private fun SliderRow(
                 )
             }
             Spacer(Modifier.width(12.dp))
+            // Both of these default to off, so the mark only shows up once the control is in use.
+            ResetAffordance(visible = abs(value) > 0.05f, description = "恢复默认 关") {
+                onChange(0f)
+                onCommit()
+            }
             Text(
                 label,
                 fontSize = 13.sp,
