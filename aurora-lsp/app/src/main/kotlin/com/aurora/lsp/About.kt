@@ -3,6 +3,7 @@ package com.aurora.lsp
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,25 +60,24 @@ fun CreatorCard(dark: Boolean) {
     val muted = if (dark) MutedDark else Muted
     val accent = if (dark) AccentDark else Accent
     val context = LocalContext.current
-    val avatar = rememberAsset("profile.jpg")
 
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (avatar != null) {
-                Image(
-                    bitmap = avatar,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                )
-            } else {
-                Box(
-                    Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(accent.copy(alpha = 0.2f))
+            // A monogram rather than the photo. Bitmaps drawn inside the dock's recorded backdrop
+            // layer were being painted at the window origin at full pixel size, and a letterform
+            // is the app's own material anyway.
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "凌",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MiuixTheme.colorScheme.primary
                 )
             }
             Spacer(Modifier.width(14.dp))
@@ -103,7 +103,7 @@ fun CreatorCard(dark: Boolean) {
                         )
                     }
                 }
-                .background(if (dark) Color(0xFF1B2436) else Color(0xFFE8EEFB))
+                .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
                 .padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -126,35 +126,25 @@ fun ProgramCard(dark: Boolean, versionName: String) {
     val ink = if (dark) InkDark else Ink
     val muted = if (dark) MutedDark else Muted
     val accent = if (dark) AccentDark else Accent
-    val banner = rememberAsset("ambient.webp")
 
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2.6f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (dark) Color(0xFF0B0F16) else Color(0xFF10141C))
+                .clip(RoundedCornerShape(Radius.block))
+                .background(MiuixTheme.colorScheme.surfaceContainerHighest)
         ) {
-            if (banner != null) {
-                Image(
-                    bitmap = banner,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                Color(0xE60B0F16),
-                                Color(0x330B0F16)
-                            )
-                        )
-                    )
+            // The band marks behind the wordmark are drawn in code, so they stay sharp at every
+            // density and survive being recorded into the dock's backdrop layer.
+            EqGlyph(
+                curve = Presets.curve(2),
+                color = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                height = 44.dp,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 20.dp)
+                    .width(120.dp)
             )
             Column(
                 Modifier
@@ -165,12 +155,12 @@ fun ProgramCard(dark: Boolean, versionName: String) {
                     "AURORA",
                     fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color.White
+                    color = MiuixTheme.colorScheme.onSurface
                 )
                 Text(
                     "按播放会话挂载的多段均衡叠加",
                     fontSize = 11.sp,
-                    color = Color.White.copy(alpha = 0.72f),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
@@ -189,7 +179,7 @@ fun ProgramCard(dark: Boolean, versionName: String) {
             "只在小米 17 系列上验证过。其它品牌没有测试，不保证能用。",
             fontSize = 12.sp,
             lineHeight = 19.sp,
-            color = if (dark) Color(0xFFC9A227) else Color(0xFFB07514)
+            color = WarnColor
         )
         Spacer(Modifier.height(16.dp))
         LinkDiagram(dark)

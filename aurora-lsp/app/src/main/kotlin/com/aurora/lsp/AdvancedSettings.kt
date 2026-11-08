@@ -106,8 +106,7 @@ private fun SliderRow(
             valueRange = valueRange,
             steps = steps,
             onValueChangeFinished = onCommit,
-            height = 36.dp,
-            colors = auroraSliderColors(),
+            height = 24.dp,
             modifier = Modifier.fillMaxWidth()
         )
     }

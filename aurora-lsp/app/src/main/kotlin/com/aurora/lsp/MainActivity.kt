@@ -2,6 +2,11 @@ package com.aurora.lsp
 
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.animateFloatAsState
 import com.aurora.lsp.liquid.lens
 import com.aurora.lsp.liquid.rememberCombinedBackdrop
@@ -620,7 +625,7 @@ private fun TonePage(
                         )
                     },
                     trailing = {
-                        if (selected) CheckMark()
+                        CheckMark(selected)
                     },
                     onClick = { scope.launch { state.update(newPreset = key) } }
                 )
@@ -637,7 +642,7 @@ private fun TonePage(
                             color = if (selected) colors.primary else colors.onSurfaceVariantSummary
                         )
                     },
-                    trailing = { if (selected) CheckMark() },
+                    trailing = { CheckMark(selected) },
                     onClick = {
                         scope.launch { state.update(newCurve = preset.curve, newPreset = "custom") }
                     }
@@ -664,13 +669,21 @@ private fun TonePage(
 
 /** The selected mark. One size, one colour, only where something is chosen. */
 @Composable
-private fun CheckMark() {
-    Icon(
-        imageVector = Icons.Filled.Check,
-        contentDescription = null,
-        tint = MiuixTheme.colorScheme.primary,
-        modifier = Modifier.size(20.dp)
-    )
+private fun CheckMark(visible: Boolean) {
+    // Selecting a preset moves the check rather than making it pop in and out: the row was already
+    // laid out, so the mark should arrive.
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.6f, animationSpec = tween(180)),
+        exit = fadeOut(tween(90)) + scaleOut(targetScale = 0.6f, animationSpec = tween(120))
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Check,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp)
+        )
+    }
 }
 
 @Composable
@@ -680,6 +693,9 @@ internal fun CurvePreview(
     grid: Color,
     showScale: Boolean = false
 ) {
+    // Animated, so switching a preset shows the curve moving to its new shape instead of the line
+    // teleporting. Six bands, six springs, one gesture.
+    val live = rememberAnimatedBands(curve)
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
@@ -690,7 +706,7 @@ internal fun CurvePreview(
         val mid = h / 2f
         val inset = 3f
         val usable = h / 2f - inset
-        val step = w / (curve.size - 1).coerceAtLeast(1)
+        val step = w / (live.size - 1).coerceAtLeast(1)
 
         // Horizontal grid at +12 / +6 / 0 / -6 / -12. The zero line is the one that matters: it is
         // what tells a cut from a boost at a glance.
@@ -715,7 +731,7 @@ internal fun CurvePreview(
             )
         }
 
-        val points = curve.mapIndexed { index, db ->
+        val points = live.mapIndexed { index, db ->
             Offset(step * index, mid - (db / 12f) * usable)
         }
 
@@ -745,6 +761,27 @@ internal fun bandLabel(hz: Float): String {
     else String.format(java.util.Locale.US, "%.1fk", k)
 }
 
+/**
+ * One spring per band, so a curve change is a movement rather than a jump.
+ *
+ * <p>That is the whole point of the chart: choosing 现场低频 should show the bass coming up and the
+ * top going down, in the order the DSP applies it. A line that teleports shows the destination but
+ * never the shape of the change.
+ */
+@Composable
+private fun rememberAnimatedBands(target: FloatArray): FloatArray {
+    val out = FloatArray(target.size)
+    for (index in target.indices) {
+        val state = animateFloatAsState(
+            targetValue = target[index],
+            animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f),
+            label = "band" + index
+        )
+        out[index] = state.value
+    }
+    return out
+}
+
 @Composable
 private fun BandScale(color: Color) {
     Row(Modifier.fillMaxWidth()) {
@@ -769,6 +806,10 @@ private fun EqPage(
 ) {
     val colors = MiuixTheme.colorScheme
     var strengthDraft by remember(state.strength) { mutableStateOf(state.strength.toFloat()) }
+    // A local copy of the curve while a finger is down. Writing straight through to Settings on
+    // every pixel meant a su shell round trip per frame, and the thumb only moved once the write
+    // came back - which is exactly what "拖不动" felt like.
+    var draftCurve by remember(state.curve) { mutableStateOf(state.curve) }
 
     AuroraPage(
         title = "均衡器",
@@ -777,7 +818,7 @@ private fun EqPage(
     ) {
         AuroraGroup("曲线") {
             Column(Modifier.padding(Space.card)) {
-                CurvePreview(state.curve, colors.primary, colors.dividerLine, showScale = true)
+                CurvePreview(draftCurve, colors.primary, colors.dividerLine, showScale = true)
                 Spacer(Modifier.height(6.dp))
                 BandScale(colors.onSurfaceVariantSummary)
             }
@@ -788,13 +829,14 @@ private fun EqPage(
                 if (index > 0) RowDivider()
                 BandRow(
                     label = bandLabel(hz),
-                    value = state.curve[index],
-                    dark = dark
-                ) { value ->
-                    scope.launch {
-                        state.update(newCurve = state.curve.copyOf().also { it[index] = value })
+                    value = draftCurve[index],
+                    onValueChange = { value ->
+                        draftCurve = draftCurve.copyOf().also { it[index] = value }
+                    },
+                    onCommit = {
+                        scope.launch { state.update(newCurve = draftCurve) }
                     }
-                }
+                )
             }
         }
 
@@ -821,8 +863,7 @@ private fun EqPage(
                     onValueChangeFinished = {
                         scope.launch { state.update(newStrength = strengthDraft.toInt()) }
                     },
-                    height = 36.dp,
-                    colors = auroraSliderColors(),
+                    height = 24.dp,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -875,10 +916,10 @@ internal fun bandSummary(curve: FloatArray): String =
 internal fun BandRow(
     label: String,
     value: Float,
-    dark: Boolean,
-    onChange: (Float) -> Unit
+    onValueChange: (Float) -> Unit,
+    onCommit: () -> Unit
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = Space.card, vertical = 10.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = Space.card, vertical = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 label,
@@ -900,12 +941,13 @@ internal fun BandRow(
         }
         Slider(
             value = value,
-            onValueChange = onChange,
+            onValueChange = onValueChange,
+            onValueChangeFinished = onCommit,
             valueRange = -12f..12f,
             steps = 23,
-            // The thumb is drawn wider than the default layout height and bled into the row below.
-            height = 36.dp,
-            colors = auroraSliderColors()
+            // Six of these stack in one card. At the default height the bars were slabs; the thumb
+            // still gets a full-size touch target, only the drawing gets thinner.
+            height = 22.dp
         )
     }
 }
@@ -955,7 +997,7 @@ private fun DiagPage(
         subtitle = "出问题时，这一页要能替你说话。",
         underTitle = { StatusStrip(state) }
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(Space.group)) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.group)) {
             SectionCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
@@ -997,7 +1039,7 @@ private fun DiagPage(
                         color = accent,
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (dark) Color(0xFF1B2436) else Color(0xFFE8EEFB))
+                            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
                             .clickable { onRequestAdaptation() }
                             .padding(horizontal = 20.dp, vertical = 12.dp)
                     )
@@ -1023,7 +1065,7 @@ private fun DiagPage(
                     color = accent,
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .background(if (dark) Color(0xFF1B2436) else Color(0xFFE8EEFB))
+                        .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
                         .clickable { playing = !playing }
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 )
@@ -1136,13 +1178,14 @@ private fun SettingsPage(
         subtitle = "外观、更新、反馈，都在这。",
         underTitle = { StatusStrip(state = state) }
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(Space.group)) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Space.group)) {
             AuroraGroup("外观") {
                 listOf(
                     "system" to "跟随系统",
                     "light" to "浅色",
                     "dark" to "深色"
-                ).forEach { (key, label) ->
+                ).forEachIndexed { index, (key, label) ->
+                    if (index > 0) RowDivider()
                     SelectRow(label, ui.themeMode == key, dark) { ui.setTheme(key) }
                 }
             }
@@ -1165,6 +1208,7 @@ private fun SettingsPage(
                     dark = dark,
                     onChange = { ui.changePredictiveBack(it) }
                 )
+                RowDivider()
                 ToggleRow(
                     title = "启动时检查更新",
                     detail = "只有发现新版本才会提示",
@@ -1175,79 +1219,46 @@ private fun SettingsPage(
             }
 
             AuroraGroup("设备") {
-                Row(
-                    Modifier.clickable { onOpenDevice() },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("设备适配", fontSize = 14.sp, color = ink)
-                        Text(
-                            if (deviceSupported) "检测通过，这台机器可以正常使用"
-                            else "查看自动检测停在哪一步",
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp,
-                            color = muted
-                        )
-                    }
-                    Text("查看", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
-                }
+                EntryRow(
+                    title = "设备适配",
+                    detail = if (deviceSupported) "检测通过，这台机器可以正常使用"
+                    else "查看自动检测停在哪一步",
+                    action = "查看",
+                    dark = dark,
+                    onClick = onOpenDevice
+                )
             }
 
             AuroraGroup("更新") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("当前版本", fontSize = 14.sp, color = ink)
-                        Text(versionName, fontSize = 12.sp, color = muted)
-                    }
-                    Text(
-                        if (checking) "检查中" else "检查更新",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (checking) muted else accent,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(enabled = !checking) { onCheckUpdate() }
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                }
+                EntryRow(
+                    title = "当前版本",
+                    detail = versionName,
+                    action = if (checking) "检查中" else "检查更新",
+                    dark = dark,
+                    onClick = { if (!checking) onCheckUpdate() }
+                )
                 if (message != null) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(message, fontSize = 12.sp, color = muted)
+                    RowDivider()
+                    NoteText(message)
                 }
                 if (engineVersion > 0 && engineVersion != versionCode) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
+                    RowDivider()
+                    NoteText(
                         "引擎版本不一致：模块里跑的是 " + engineVersion + "，当前安装的是 " +
                             versionCode + "。重启设备后生效。",
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                        color = WarnColor
+                        error = true
                     )
                 }
             }
 
             AuroraGroup("反馈") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("反馈问题", fontSize = 14.sp, color = ink)
-                        Text(
-                            "用不了、听不出区别、界面不对，都可以在这里说",
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
-                            color = muted
-                        )
-                    }
-                    Text(
-                        "去反馈",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = accent,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onFeedback() }
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                    )
-                }
+                EntryRow(
+                    title = "反馈问题",
+                    detail = "用不了、听不出区别、界面不对，都可以在这里说",
+                    action = "去反馈",
+                    dark = dark,
+                    onClick = onFeedback
+                )
             }
 
             AuroraGroup("创作者") {
@@ -1417,7 +1428,7 @@ private fun openUrl(context: Context, url: String) {
 private fun SelectRow(label: String, selected: Boolean, dark: Boolean, onClick: () -> Unit) {
     AuroraRow(
         title = label,
-        trailing = { if (selected) CheckMark() },
+        trailing = { CheckMark(selected) },
         onClick = onClick
     )
 }
@@ -1436,7 +1447,9 @@ private fun SectionCard(onClick: (() -> Unit)? = null, content: @Composable () -
         insideMargin = PaddingValues(Space.card),
         colors = CardDefaults.defaultColors(color = colors.surfaceContainer)
     ) {
-        Column { content() }
+        // fillMaxWidth, not decoration: without it a weight() row inside collapses to zero width
+        // and its text is clipped mid-word.
+        Column(Modifier.fillMaxWidth()) { content() }
     }
 }
 

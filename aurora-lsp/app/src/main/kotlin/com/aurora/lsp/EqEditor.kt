@@ -126,10 +126,11 @@ fun EqEditorPanel(
                 BandRow(
                     label = bandLabel(hz),
                     value = curve[index],
-                    dark = dark,
-                    onChange = { value ->
+                    onValueChange = { value ->
                         curve = curve.copyOf().also { it[index] = value }
-                    }
+                    },
+                    // This panel keeps its own draft and commits on 应用, so a drag never writes.
+                    onCommit = {}
                 )
             }
         }

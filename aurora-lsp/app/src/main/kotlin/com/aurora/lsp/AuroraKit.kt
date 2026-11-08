@@ -1,5 +1,9 @@
 package com.aurora.lsp
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,6 +26,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +36,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -37,8 +45,6 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SliderColors
-import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.abs
@@ -102,14 +108,34 @@ internal fun AuroraPage(
         )
     ) {
         item {
-            Column {
+            // fillMaxWidth here is load-bearing, not decoration. A Column wraps its children, and
+            // inside a wrap-width parent any `Modifier.weight(1f)` in a Row resolves to zero - which
+            // is what clipped the settings rows and pushed the diagnostics cards off screen.
+            //
+            // The entrance runs once per page and is the only load animation in the app: it settles
+            // the page under the dock instead of having it appear in place.
+            val appear = remember { Animatable(0f) }
+            LaunchedEffect(Unit) {
+                appear.animateTo(1f, tween(durationMillis = 260, easing = FastOutSlowInEasing))
+            }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        alpha = appear.value
+                        translationY = (1f - appear.value) * 12.dp.toPx()
+                    }
+            ) {
                 PageTitle(title, subtitle)
                 if (underTitle != null) {
                     Spacer(Modifier.height(16.dp))
-                    Column(content = underTitle)
+                    Column(Modifier.fillMaxWidth(), content = underTitle)
                 }
                 Spacer(Modifier.height(Space.group))
-                Column(verticalArrangement = Arrangement.spacedBy(Space.group)) { content() }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(Space.group)
+                ) { content() }
             }
         }
     }
@@ -155,7 +181,8 @@ internal fun AuroraGroup(title: String? = null, content: @Composable ColumnScope
             insideMargin = PaddingValues(0.dp),
             colors = CardDefaults.defaultColors(color = colors.surfaceContainer)
         ) {
-            content()
+            // The card's own content column is the width authority for every row inside it.
+            Column(Modifier.fillMaxWidth()) { content() }
         }
     }
 }
@@ -294,6 +321,13 @@ internal fun StatusCapsule(
     modifier: Modifier = Modifier
 ) {
     val colors = MiuixTheme.colorScheme
+    // The engine changes state on its own every two seconds; colouring the dot and the word with a
+    // short crossfade keeps a state change from blinking.
+    val liveTone by animateColorAsState(
+        targetValue = tone,
+        animationSpec = tween(durationMillis = 240),
+        label = "statusTone"
+    )
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -302,9 +336,9 @@ internal fun StatusCapsule(
             .padding(horizontal = Space.card, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Dot(tone)
+        Dot(liveTone)
         Spacer(Modifier.width(10.dp))
-        Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = tone)
+        Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = liveTone)
         Spacer(Modifier.weight(1f))
         Text(readings, fontSize = 12.sp, color = colors.onSurfaceVariantSummary)
     }
@@ -321,21 +355,5 @@ internal fun ValueText(text: String, accent: Boolean = false) {
         color = if (accent) colors.primary else colors.onSurfaceVariantSummary,
         maxLines = 1,
         softWrap = false
-    )
-}
-
-/**
- * One slider look for the whole app.
- *
- * <p>Nine sliders on one screen at full accent saturation turned the accent into wallpaper, which
- * is the opposite of what an accent is for. The filled track is the accent held back and the thumb
- * carries the real colour, so the eye lands on the handle being dragged rather than on six bars.
- */
-@Composable
-internal fun auroraSliderColors(): SliderColors {
-    val colors = MiuixTheme.colorScheme
-    return SliderDefaults.sliderColors(
-        foregroundColor = colors.primary.copy(alpha = 0.34f),
-        thumbColor = colors.primary
     )
 }
