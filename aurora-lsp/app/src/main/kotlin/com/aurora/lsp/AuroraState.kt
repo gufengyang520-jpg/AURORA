@@ -62,6 +62,18 @@ class AuroraState(private val context: Context) {
     var appMap by mutableStateOf<Map<String, String>>(emptyMap())
         private set
 
+    /** Stereo widening, 0-3 dB. */
+    var spread by mutableStateOf(0f)
+        private set
+
+    /** Perceived loudness boost in dB (LoudnessEnhancer). */
+    var loudnessDb by mutableStateOf(0f)
+        private set
+
+    /** NXP Virtualizer strength, 0-1000. */
+    var virtualizer by mutableStateOf(0)
+        private set
+
     /** Gains the engine actually wrote, as reported back through aurora_backend_bands. */
     var actualBands by mutableStateOf<FloatArray?>(null)
         private set
@@ -94,6 +106,9 @@ class AuroraState(private val context: Context) {
         val log: String?,
         val userPresetsRaw: String?,
         val appMapRaw: String?,
+        val spreadRaw: String?,
+        val loudnessRaw: String?,
+        val virtualizerRaw: String?,
         val device: DeviceProfile
     )
 
@@ -125,6 +140,9 @@ class AuroraState(private val context: Context) {
             log = read(AuroraEngine.R_LOG),
             userPresetsRaw = read(AuroraEngine.K_USER_PRESETS),
             appMapRaw = read(AuroraEngine.K_APP_MAP),
+            spreadRaw = read(AuroraEngine.K_SPREAD),
+            loudnessRaw = read(AuroraEngine.K_LOUDNESS),
+            virtualizerRaw = read(AuroraEngine.K_VIRTUALIZER),
             device = DeviceProfile.read(resolver2)
         )
     }
@@ -150,6 +168,9 @@ class AuroraState(private val context: Context) {
             .takeLast(50)
         userPresets = parsePresets(raw.userPresetsRaw)
         appMap = parseAppMap(raw.appMapRaw)
+        spread = (raw.spreadRaw?.toIntOrNull() ?: 0) / 10f
+        loudnessDb = ((raw.loudnessRaw?.toIntOrNull() ?: 0) / 100f)
+        virtualizer = raw.virtualizerRaw?.toIntOrNull() ?: 0
         device = raw.device
         loaded = true
     }
@@ -206,6 +227,35 @@ class AuroraState(private val context: Context) {
     suspend fun restoreSaved() {
         val saved = savedCurve ?: return
         update(newCurve = saved)
+    }
+
+    /** Writes the three advanced DSP parameters through su. */
+    suspend fun updateAdvanced(
+        spread: Float = this.spread,
+        loudnessDb: Float = this.loudnessDb,
+        virtualizer: Int = this.virtualizer
+    ) {
+        saving = true
+        error = null
+        val cmd = buildString {
+            append("settings put global ").append(AuroraEngine.K_SPREAD).append(' ')
+            append((spread * 10).toInt())
+            append(" && settings put global ").append(AuroraEngine.K_LOUDNESS).append(' ')
+            append((loudnessDb * 100).toInt())
+            append(" && settings put global ").append(AuroraEngine.K_VIRTUALIZER).append(' ')
+            append(virtualizer)
+            append(" && echo AURORA_OK")
+        }
+        val output = withContext(Dispatchers.IO) { runRoot(cmd) }
+        saving = false
+        if (!output.contains("AURORA_OK")) {
+            error = "保存失败。请确认已给 AURORA 授予 Root 权限。"
+            return
+        }
+        this.spread = spread
+        this.loudnessDb = loudnessDb
+        this.virtualizer = virtualizer
+        refresh()
     }
 
     suspend fun selfTest() {

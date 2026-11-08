@@ -865,6 +865,7 @@ private fun EqPage(
             }
 
             GroupLabel("自定义曲线", muted)
+            AdvancedSettingsCard(state = state, dark = dark, scope = scope)
             SectionCard {
                 CurvePreview(state.curve, accent, muted, showScale = true)
                 Spacer(Modifier.height(4.dp))

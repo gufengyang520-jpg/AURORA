@@ -1,5 +1,6 @@
 package com.aurora.lsp;
 
+import android.os.Handler;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
@@ -17,15 +18,7 @@ import java.lang.reflect.Method;
  */
 public final class AudioEq {
 
-    /**
-     * Band centres in Hz: low weight, warmth, boxiness, voice, clarity, air.
-     *
-     * <p>The previous layout started at 250 Hz. That made real bass unreachable - anything below
-     * 250 Hz simply had no band - so every "more bass" curve had to pile its gain onto 250 and
-     * 500 Hz, which sit exactly in the 150-600 Hz region that reads as muddy. Moving the two
-     * lowest bands down to 80 and 200 Hz means the weight can be added where it is felt while the
-     * muddy range stays flat or cut.
-     */
+    /** Band centres in Hz: low weight, warmth, boxiness, voice, clarity, air. */
     public static final float[] BAND_HZ = {80f, 200f, 500f, 1500f, 4000f, 10000f};
     public static final int BANDS = BAND_HZ.length;
     public static final float MAX_DB = 12f;
@@ -35,6 +28,7 @@ public final class AudioEq {
     private static Constructor<?> limiterCtor;
     private static Constructor<?> mbcBandCtor;
     private static Method setBandAll;
+    private static Method setBandByChannel;
     private static Method setMbcBandAll;
     private static Method setLimiterAll;
     private static Method setEnabled;
@@ -42,7 +36,21 @@ public final class AudioEq {
     private static Method release;
     private static String resolveError;
 
+    // LoudnessEnhancer
+    private static Constructor<?> leCtor;
+    private static Method leSetTargetGain;
+    private static Method leSetEnabled;
+    private static Method leRelease;
+
+    // Virtualizer
+    private static Constructor<?> virtCtor;
+    private static Method virtSetStrength;
+    private static Method virtSetEnabled;
+    private static Method virtRelease;
+
     private Object effect;
+    private Object loudnessEnhancer;
+    private Object virtualizer;
     private int bandCount;
     private String lastError = "";
     private String signature = "";
@@ -57,34 +65,56 @@ public final class AudioEq {
             dpCtor = dp.getConstructor(int.class, int.class);
             bandCtor = band.getConstructor(boolean.class, float.class, float.class);
             setBandAll = dp.getMethod("setPreEqBandAllChannelsTo", int.class, band);
+            setBandByChannel = dp.getMethod("setPreEqBandByChannelIndex", int.class, int.class, band);
             setEnabled = dp.getMethod("setEnabled", boolean.class);
             hasControl = dp.getMethod("hasControl");
             release = dp.getMethod("release");
             try {
                 Class<?> limiter = Class.forName("android.media.audiofx.DynamicsProcessing$Limiter");
-                limiterCtor = limiter.getConstructor(boolean.class, int.class, float.class,
-                        float.class, float.class, float.class, float.class);
+            limiterCtor = limiter.getConstructor(boolean.class, int.class, float.class,
+                    float.class, float.class, float.class, float.class);
                 setLimiterAll = dp.getMethod("setLimiterAllChannelsTo", limiter);
             } catch (Throwable ignored) {
-                // The limiter is an extra safety net. If this build exposes a different shape,
-                // the equalizer itself must still work.
-                limiterCtor = null;
-                setLimiterAll = null;
             }
             try {
                 Class<?> mbcBand = Class.forName("android.media.audiofx.DynamicsProcessing$MbcBand");
-                mbcBandCtor = mbcBand.getConstructor(boolean.class, float.class, float.class,
-                        float.class, float.class, float.class, float.class, float.class,
-                        float.class, float.class, float.class);
+            mbcBandCtor = mbcBand.getConstructor(boolean.class, float.class, float.class,
+                    float.class, float.class, float.class, float.class, float.class,
+                    float.class, float.class, float.class);
                 setMbcBandAll = dp.getMethod("setMbcBandAllChannelsTo", int.class, mbcBand);
             } catch (Throwable ignored) {
-                // Multiband compression is a refinement; losing it must not cost the EQ.
-                mbcBandCtor = null;
-                setMbcBandAll = null;
             }
             return true;
         } catch (Throwable error) {
             resolveError = describe(error);
+            return false;
+        }
+    }
+
+    private static synchronized boolean resolveLoudness() {
+        if (leCtor != null) return true;
+        try {
+            Class<?> le = Class.forName("android.media.audiofx.LoudnessEnhancer");
+            leCtor = le.getConstructor(int.class, int.class);
+            leSetTargetGain = le.getMethod("setTargetGain", int.class);
+            leSetEnabled = le.getMethod("setEnabled", boolean.class);
+            leRelease = le.getMethod("release");
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static synchronized boolean resolveVirtualizer() {
+        if (virtCtor != null) return true;
+        try {
+            Class<?> virt = Class.forName("android.media.audiofx.Virtualizer");
+            virtCtor = virt.getConstructor(int.class, int.class);
+            virtSetStrength = virt.getMethod("setStrength", short.class);
+            virtSetEnabled = virt.getMethod("setEnabled", boolean.class);
+            virtRelease = virt.getMethod("release");
+            return true;
+        } catch (Throwable ignored) {
             return false;
         }
     }
@@ -104,13 +134,14 @@ public final class AudioEq {
             Object preEq = effect.getClass()
                     .getMethod("getPreEqByChannelIndex", int.class).invoke(effect, 0);
             bandCount = (Integer) preEq.getClass().getMethod("getBandCount").invoke(preEq);
-            lastError = "";
             if (!Boolean.TRUE.equals(hasControl.invoke(effect))) {
                 lastError = "no control over session " + session;
                 return false;
             }
             enableLimiter();
             enableBaseCompression();
+            openLoudness(session);
+            openVirtualizer(session);
             return bandCount > 0;
         } catch (Throwable error) {
             lastError = describe(error);
@@ -119,93 +150,86 @@ public final class AudioEq {
         }
     }
 
+    private void openLoudness(int session) {
+        if (!resolveLoudness()) return;
+        try {
+            loudnessEnhancer = leCtor.newInstance(0, session);
+        } catch (Throwable ignored) {
+            loudnessEnhancer = null;
+        }
+    }
+
+    private void openVirtualizer(int session) {
+        if (!resolveVirtualizer()) return;
+        try {
+            virtualizer = virtCtor.newInstance(0, session);
+        } catch (Throwable ignored) {
+            virtualizer = null;
+        }
+    }
+
     public int bandCount() {
         return bandCount;
     }
 
     /**
-     * Keeps the summed output below full scale.
+     * Writes the curve, optionally with per-channel spread for stereo widening.
      *
-     * <p>A boosted shelf on an already loud track clips at the DAC, and clipping is heard as the
-     * crackle and harshness people report with the spatializer on - that path adds its own gain
-     * before the audio reaches us. The threshold sits just under 0 dBFS with a fast attack, so the
-     * limiter only touches peaks that would have clipped and leaves the rest of the signal alone.
-     *
-     * <p>Best effort: a build without this API simply runs without it.
+     * <p>When {@code spread} is non-zero and per-channel access works, the left channel gets
+     * {@code gains + spread} and the right gets {@code gains - spread} above 500 Hz. The brain
+     * reads that inter-channel difference as width. Low frequencies stay centred: separating
+     * bass makes it thin rather than wide.
      */
-    private void enableLimiter() {
-        if (effect == null || limiterCtor == null || setLimiterAll == null) return;
-        try {
-            // -3 dBFS rather than -1: the extra 2 dB of headroom is what stops a bass-heavy
-            // preset from clipping the speaker on loud, low-bitrate material.
-            Object limiter = limiterCtor.newInstance(true, 0, 0.005f, 0.06f, 10f, -3f, 0f);
-            setLimiterAll.invoke(effect, limiter);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /**
-     * Light compression on the lowest band.
-     *
-     * <p>This is the part an equalizer cannot do. Boosting 80 Hz makes bass audible but it also
-     * makes loud hits swell past everything else, which on a phone speaker reads as boom rather
-     * than punch. A gentle ratio with a slow release holds those peaks down so the bass can be
-     * lifted without the whole mix losing clarity.
-     *
-     * <p>Only band 0 is touched; the rest of the spectrum is left uncompressed on purpose.
-     */
-    private void enableBaseCompression() {
-        if (effect == null || mbcBandCtor == null || setMbcBandAll == null) return;
-        try {
-            Object band = mbcBandCtor.newInstance(
-                    true,        // in use
-                    120f,        // covers everything below this cutoff
-                    0.020f,      // attack, slow enough to keep the initial transient
-                    0.250f,      // release, fast enough to recover between hits
-                    2.0f,        // ratio, gentle: only the loudest hits move
-                    -24f,        // threshold
-                    6f,          // knee
-                    -60f,        // noise gate below this
-                    1.0f,        // no downward expansion
-                    0f,          // no pre gain
-                    0f);         // no post gain
-            setMbcBandAll.invoke(effect, 0, band);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** gains in dB, mapped onto the first {@link #BANDS} bands. */
-    public synchronized boolean apply(float[] gains, boolean enabledStage) {
+    public synchronized boolean apply(float[] gains, float[] spread, int loudnessMillibels,
+                                      int virtualizerStrength, boolean enabledStage) {
         if (effect == null) return false;
         try {
             int used = Math.min(bandCount, Math.min(BANDS, gains == null ? 0 : gains.length));
+            boolean perChannel = spread != null && setBandByChannel != null;
             for (int i = 0; i < used; i++) {
                 float gain = Math.max(-MAX_DB, Math.min(MAX_DB, gains[i]));
-                // Catch per band, not per call. A device that rejects one particular frequency
-                // reports "bad parameter value" with no hint which band caused it; recording the
-                // index, centre and value turns that into something an adaptation can act on.
-                try {
+                // Surplus bands are left untouched: DynamicsProcessing reports them flat by
+                // default, and parking them all on 6.3 kHz stacked filters we never meant to add.
+                if (perChannel && BAND_HZ[i] >= 500f) {
+                    float delta = Math.max(-3f, Math.min(3f, spread[i]));
+                    // Channel 0 = left, channel 1 = right
+                    setBandByChannel.invoke(effect, 0, i,
+                            bandCtor.newInstance(true, BAND_HZ[i], clamp(gain + delta)));
+                    setBandByChannel.invoke(effect, 1, i,
+                            bandCtor.newInstance(true, BAND_HZ[i], clamp(gain - delta)));
+                } else {
                     setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
-                } catch (Throwable error) {
-                    lastError = "band " + i + " @ " + Math.round(BAND_HZ[i]) + " Hz, gain "
-                            + String.format(java.util.Locale.US, "%.1f", gain) + " dB: "
-                            + describe(error);
-                    return false;
                 }
             }
-            // Surplus bands are left untouched: DynamicsProcessing reports them flat by default,
-            // and parking them all on 6.3 kHz stacked filters we never meant to add.
-            try {
-                setEnabled.invoke(effect, enabledStage);
-            } catch (Throwable error) {
-                lastError = "setEnabled(" + enabledStage + "): " + describe(error);
-                return false;
+            setEnabled.invoke(effect, enabledStage);
+
+            // LoudnessEnhancer: boosts perceived loudness without raising peaks.
+            if (loudnessEnhancer != null && leSetTargetGain != null) {
+                try {
+                    leSetTargetGain.invoke(loudnessEnhancer, loudnessMillibels);
+                    leSetEnabled.invoke(loudnessEnhancer, true);
+                } catch (Throwable ignored) {
+                }
             }
+
+            // NXP Virtualizer: adds spatial depth.
+            if (virtualizer != null && virtSetStrength != null) {
+                try {
+                    virtSetStrength.invoke(virtualizer, (short) virtualizerStrength);
+                    virtSetEnabled.invoke(virtualizer, virtualizerStrength > 0);
+                } catch (Throwable ignored) {
+                }
+            }
+
             return true;
         } catch (Throwable error) {
             lastError = describe(error);
             return false;
         }
+    }
+
+    private static float clamp(float v) {
+        return Math.max(-MAX_DB, Math.min(MAX_DB, v));
     }
 
     public synchronized boolean isApplied() {
@@ -222,12 +246,18 @@ public final class AudioEq {
     }
 
     public synchronized void close() {
-        if (effect == null) return;
-        try {
-            release.invoke(effect);
-        } catch (Throwable ignored) {
+        if (effect != null) {
+            try { release.invoke(effect); } catch (Throwable ignored) {}
+        }
+        if (loudnessEnhancer != null) {
+            try { leRelease.invoke(loudnessEnhancer); } catch (Throwable ignored) {}
+        }
+        if (virtualizer != null) {
+            try { virtRelease.invoke(virtualizer); } catch (Throwable ignored) {}
         }
         effect = null;
+        loudnessEnhancer = null;
+        virtualizer = null;
         bandCount = 0;
         applied = false;
         signature = "";
@@ -243,6 +273,25 @@ public final class AudioEq {
             return Boolean.TRUE.equals(hasControl.invoke(effect));
         } catch (Throwable error) {
             return false;
+        }
+    }
+
+    private void enableLimiter() {
+        if (effect == null || limiterCtor == null || setLimiterAll == null) return;
+        try {
+            Object limiter = limiterCtor.newInstance(true, 0, 0.005f, 0.06f, 10f, -3f, 0f);
+            setLimiterAll.invoke(effect, limiter);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void enableBaseCompression() {
+        if (effect == null || mbcBandCtor == null || setMbcBandAll == null) return;
+        try {
+            Object band = mbcBandCtor.newInstance(
+                    true, 120f, 0.020f, 0.250f, 2.0f, -24f, 6f, -60f, 1.0f, 0f, 0f);
+            setMbcBandAll.invoke(effect, 0, band);
+        } catch (Throwable ignored) {
         }
     }
 
