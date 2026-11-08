@@ -42,15 +42,8 @@ public final class AudioEq {
     private static Method leSetEnabled;
     private static Method leRelease;
 
-    // Virtualizer
-    private static Constructor<?> virtCtor;
-    private static Method virtSetStrength;
-    private static Method virtSetEnabled;
-    private static Method virtRelease;
-
     private Object effect;
     private Object loudnessEnhancer;
-    private Object virtualizer;
     private int bandCount;
     private String lastError = "";
     private String signature = "";
@@ -105,20 +98,6 @@ public final class AudioEq {
         }
     }
 
-    private static synchronized boolean resolveVirtualizer() {
-        if (virtCtor != null) return true;
-        try {
-            Class<?> virt = Class.forName("android.media.audiofx.Virtualizer");
-            virtCtor = virt.getConstructor(int.class, int.class);
-            virtSetStrength = virt.getMethod("setStrength", short.class);
-            virtSetEnabled = virt.getMethod("setEnabled", boolean.class);
-            virtRelease = virt.getMethod("release");
-            return true;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
     public synchronized boolean open(int session) {
         close();
         if (!resolve()) {
@@ -141,7 +120,6 @@ public final class AudioEq {
             enableLimiter();
             enableBaseCompression();
             openLoudness(session);
-            openVirtualizer(session);
             return bandCount > 0;
         } catch (Throwable error) {
             lastError = describe(error);
@@ -159,15 +137,6 @@ public final class AudioEq {
         }
     }
 
-    private void openVirtualizer(int session) {
-        if (!resolveVirtualizer()) return;
-        try {
-            virtualizer = virtCtor.newInstance(0, session);
-        } catch (Throwable ignored) {
-            virtualizer = null;
-        }
-    }
-
     public int bandCount() {
         return bandCount;
     }
@@ -181,7 +150,7 @@ public final class AudioEq {
      * bass makes it thin rather than wide.
      */
     public synchronized boolean apply(float[] gains, float[] spread, int loudnessMillibels,
-                                      int virtualizerStrength, boolean enabledStage) {
+                                      boolean enabledStage) {
         if (effect == null) return false;
         try {
             int used = Math.min(bandCount, Math.min(BANDS, gains == null ? 0 : gains.length));
@@ -191,7 +160,7 @@ public final class AudioEq {
                 // Surplus bands are left untouched: DynamicsProcessing reports them flat by
                 // default, and parking them all on 6.3 kHz stacked filters we never meant to add.
                 if (perChannel && BAND_HZ[i] >= 500f) {
-                    float delta = Math.max(-3f, Math.min(3f, spread[i]));
+                    float delta = Math.max(-8f, Math.min(8f, spread[i]));
                     // Channel 0 = left, channel 1 = right
                     setBandByChannel.invoke(effect, 0, i,
                             bandCtor.newInstance(true, BAND_HZ[i], clamp(gain + delta)));
@@ -208,15 +177,6 @@ public final class AudioEq {
                 try {
                     leSetTargetGain.invoke(loudnessEnhancer, loudnessMillibels);
                     leSetEnabled.invoke(loudnessEnhancer, true);
-                } catch (Throwable ignored) {
-                }
-            }
-
-            // NXP Virtualizer: adds spatial depth.
-            if (virtualizer != null && virtSetStrength != null) {
-                try {
-                    virtSetStrength.invoke(virtualizer, (short) virtualizerStrength);
-                    virtSetEnabled.invoke(virtualizer, virtualizerStrength > 0);
                 } catch (Throwable ignored) {
                 }
             }
@@ -252,12 +212,8 @@ public final class AudioEq {
         if (loudnessEnhancer != null) {
             try { leRelease.invoke(loudnessEnhancer); } catch (Throwable ignored) {}
         }
-        if (virtualizer != null) {
-            try { virtRelease.invoke(virtualizer); } catch (Throwable ignored) {}
-        }
         effect = null;
         loudnessEnhancer = null;
-        virtualizer = null;
         bandCount = 0;
         applied = false;
         signature = "";

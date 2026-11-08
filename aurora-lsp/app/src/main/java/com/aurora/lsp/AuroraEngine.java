@@ -36,10 +36,9 @@ public final class AuroraEngine {
     public static final String K_SELFTEST = "aurora_selftest";
     public static final String K_USER_PRESETS = "aurora_user_presets";
     public static final String K_APP_MAP = "aurora_app_map";
-    /** Advanced settings: spread (stereo widening), loudness, virtualizer strength. */
+    /** Advanced settings: spread (stereo widening) and perceived loudness. */
     public static final String K_SPREAD = "aurora_spread";
     public static final String K_LOUDNESS = "aurora_loudness";
-    public static final String K_VIRTUALIZER = "aurora_virtualizer";
 
     public static final String R_STATE = "aurora_backend_state";
     public static final String R_MESSAGE = "aurora_backend_message";
@@ -166,7 +165,7 @@ public final class AuroraEngine {
 
             float[] gains = testing ? selftestGains() : buildGains(config, info, volume);
             float[] spread = buildSpread(config);
-            String desired = signature(gains) + "s" + config.spread + "l" + config.loudnessMb + "v" + config.virtualizer;
+            String desired = signature(gains) + "s" + config.spread + "l" + config.loudnessMb;
             lastGains = gains;
 
             AudioEq eq = effects.get(session);
@@ -186,7 +185,7 @@ public final class AuroraEngine {
                 applied++;
                 continue;
             }
-            if (!eq.apply(gains, spread, config.loudnessMb, config.virtualizer, true)) {
+            if (!eq.apply(gains, spread, config.loudnessMb, true)) {
                 failure = eq.lastError();
                 continue;
             }
@@ -209,8 +208,10 @@ public final class AuroraEngine {
 
     private static float[] buildSpread(Config config) {
         if (config.spread <= 0) return null;
-        // Only bands at 500 Hz and above get spread; bass stays centred.
-        return new float[]{0f, 0f, 0f, config.spread, config.spread, config.spread};
+        // Non-uniform: the ear localises high frequencies by inter-aural level difference, so
+        // the top band gets the full amount, 4k gets most of it, 1.5k gets half. Bass stays
+        // centred - separating it makes the low end thin, not wide.
+        return new float[]{0f, 0f, 0f, config.spread * 0.5f, config.spread * 0.8f, config.spread};
     }
 
     private void releaseStale(long now) {
@@ -478,9 +479,8 @@ public final class AuroraEngine {
             config.userCurve = parseCurve(Settings.Global.getString(resolver, K_GEQ));
             config.userPresets = parseUserPresets(Settings.Global.getString(resolver, K_USER_PRESETS));
             config.appMap = parseAppMap(Settings.Global.getString(resolver, K_APP_MAP));
-            config.spread = clamp(Settings.Global.getInt(resolver, K_SPREAD, 0), 0, 30) / 10f;
+            config.spread = clamp(Settings.Global.getInt(resolver, K_SPREAD, 0), 0, 80) / 10f;
             config.loudnessMb = clamp(Settings.Global.getInt(resolver, K_LOUDNESS, 0), 0, 500);
-            config.virtualizer = clamp(Settings.Global.getInt(resolver, K_VIRTUALIZER, 0), 0, 1000);
         } catch (Throwable error) {
             Log.w(TAG, "config read failed: " + AudioEq.describe(error));
             if (lastGood != null) return lastGood;
@@ -561,12 +561,10 @@ public final class AuroraEngine {
         float[] userCurve;
         Map<String, float[]> userPresets = new HashMap<>();
         Map<String, String> appMap = new HashMap<>();
-        /** Stereo widening, 0–3 dB, applied above 500 Hz. */
+        /** Stereo widening, 0–8 dB, applied above 500 Hz. */
         float spread;
         /** LoudnessEnhancer target gain in millibels, 0–500 (0–5 dB). */
         int loudnessMb;
-        /** NXP Virtualizer strength, 0–1000. */
-        int virtualizer;
     }
 
     static final class SessionInfo {

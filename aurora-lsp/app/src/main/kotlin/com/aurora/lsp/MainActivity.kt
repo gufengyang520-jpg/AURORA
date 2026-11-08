@@ -4,6 +4,7 @@ import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.animation.core.animateFloatAsState
 import com.aurora.lsp.liquid.lens
+import com.aurora.lsp.liquid.rememberCombinedBackdrop
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.input.pointer.pointerInput
@@ -252,7 +253,23 @@ private fun AuroraApp() {
                     decor.background = windowBackground
                 }
             }
-            val backdrop = rememberLayerBackdrop()
+            // Two backdrops, because a glass control may only sample a layer that does not
+            // contain itself.
+            //
+            // paintBackdrop holds the page background and nothing else. Controls that sit inside
+            // the pages (LiquidSwitch) sample this one: it is their sibling, so the render tree
+            // never recurses into itself.
+            //
+            // contentBackdrop holds the pages themselves. The dock is outside the pages and reads
+            // this one, which is the whole point - a dock that samples a flat colour has nothing
+            // to blur, so it painted as an opaque slab. Here it samples real text and cards
+            // scrolling underneath, the way the dock is supposed to look.
+            val paintBackdrop = rememberLayerBackdrop()
+            val contentBackdrop = rememberLayerBackdrop()
+            // What the dock samples: the page background first, then the pages drawn on it. One
+            // alone is wrong - the background has no detail, the pages have holes where they are
+            // empty and the dock would go see-through there.
+            val dockBackdrop = rememberCombinedBackdrop(paintBackdrop, contentBackdrop)
             // Cross-page jumps now sweep with the dock's droplet instead of fading through: the
             // page and the indicator read the same scroll position, so it lands as one movement.
             // Duration grows with distance, otherwise a three-page jump whips past faster than the
@@ -299,23 +316,11 @@ private fun AuroraApp() {
                         })
                     }
                 ) { inner ->
-                    // Two layers, on purpose.
-                    //
-                    // The backdrop used to wrap this Column, which also held the pages. Anything
-                    // inside that Column that tried to sample the backdrop was therefore sampling a
-                    // layer that contained itself - the render tree recursed until libhwui blew the
-                    // stack. Splitting them fixes the direction of the dependency: the backdrop
-                    // holds only paint, the content sits above it and may read it freely.
-                    //
-                    // It also means the sampled content is a flat colour, so a glass control over it
-                    // shows refraction without much to refract. That is honest: on a solid
-                    // background, sampled glass and painted glass look the same. The layer is here
-                    // so controls can be wired to it safely, not to make them prettier today.
                     Box(Modifier.fillMaxSize()) {
                         Box(
                             Modifier
                                 .fillMaxSize()
-                                .layerBackdrop(backdrop)
+                                .layerBackdrop(paintBackdrop)
                                 .background(MiuixTheme.colorScheme.surface)
                         ) {
                             // A whisper of accent at the top, so glass has a gradient to bend. Under 5%,
@@ -331,10 +336,11 @@ private fun AuroraApp() {
                             }
                         }
 
-                        CompositionLocalProvider(LocalLiquidBackdrop provides backdrop) {
+                        CompositionLocalProvider(LocalLiquidBackdrop provides paintBackdrop) {
                         Column(
                             Modifier
                                 .fillMaxSize()
+                                .layerBackdrop(contentBackdrop)
                                 // Only the top is padded: the bottom inset is left to the content so
                                 // the list scrolls underneath the gesture bar instead of stopping
                                 // above it.
@@ -432,7 +438,7 @@ private fun AuroraApp() {
                     progress = {
                         pagerState.currentPage + pagerState.currentPageOffsetFraction
                     },
-                    backdrop = backdrop,
+                    backdrop = dockBackdrop,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
@@ -852,6 +858,11 @@ private fun EqPage(
                 }
             }
 
+            GroupLabel("声场与响度", muted)
+            SectionCard {
+                AdvancedSettingsPanel(state = state, dark = dark, scope = scope)
+            }
+
             GroupLabel("按应用分配 EQ", muted)
             SectionCard {
                 EntryRow(
@@ -865,7 +876,6 @@ private fun EqPage(
             }
 
             GroupLabel("自定义曲线", muted)
-            AdvancedSettingsCard(state = state, dark = dark, scope = scope)
             SectionCard {
                 CurvePreview(state.curve, accent, muted, showScale = true)
                 Spacer(Modifier.height(4.dp))
@@ -893,26 +903,16 @@ private fun EqPage(
 
             GroupLabel("强度", muted)
             SectionCard {
-                var draftStrength by remember(state.strength) {
-                    mutableStateOf(state.strength.toFloat())
+                StepSettingRow(
+                    title = "叠加强度",
+                    detail = "整条曲线一起按比例缩放，100% 就是预设本来的样子。",
+                    valueLabel = "${state.strength}%",
+                    steps = listOf(20f, 40f, 60f, 80f, 100f),
+                    current = state.strength.toFloat(),
+                    dark = dark
+                ) { picked ->
+                    scope.launch { state.update(newStrength = picked.toInt()) }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("叠加强度", fontSize = 14.sp, color = ink, modifier = Modifier.weight(1f))
-                    Text(
-                        "${draftStrength.toInt()}%",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = accent
-                    )
-                }
-                Slider(
-                    value = draftStrength,
-                    onValueChange = { draftStrength = it },
-                    valueRange = 0f..100f,
-                    onValueChangeFinished = {
-                        scope.launch { state.update(newStrength = draftStrength.toInt()) }
-                    }
-                )
             }
         }
     }

@@ -62,16 +62,12 @@ class AuroraState(private val context: Context) {
     var appMap by mutableStateOf<Map<String, String>>(emptyMap())
         private set
 
-    /** Stereo widening, 0-3 dB. */
+    /** Stereo widening, 0-8 dB. */
     var spread by mutableStateOf(0f)
         private set
 
     /** Perceived loudness boost in dB (LoudnessEnhancer). */
     var loudnessDb by mutableStateOf(0f)
-        private set
-
-    /** NXP Virtualizer strength, 0-1000. */
-    var virtualizer by mutableStateOf(0)
         private set
 
     /** Gains the engine actually wrote, as reported back through aurora_backend_bands. */
@@ -108,7 +104,6 @@ class AuroraState(private val context: Context) {
         val appMapRaw: String?,
         val spreadRaw: String?,
         val loudnessRaw: String?,
-        val virtualizerRaw: String?,
         val device: DeviceProfile
     )
 
@@ -142,7 +137,6 @@ class AuroraState(private val context: Context) {
             appMapRaw = read(AuroraEngine.K_APP_MAP),
             spreadRaw = read(AuroraEngine.K_SPREAD),
             loudnessRaw = read(AuroraEngine.K_LOUDNESS),
-            virtualizerRaw = read(AuroraEngine.K_VIRTUALIZER),
             device = DeviceProfile.read(resolver2)
         )
     }
@@ -170,7 +164,6 @@ class AuroraState(private val context: Context) {
         appMap = parseAppMap(raw.appMapRaw)
         spread = (raw.spreadRaw?.toIntOrNull() ?: 0) / 10f
         loudnessDb = ((raw.loudnessRaw?.toIntOrNull() ?: 0) / 100f)
-        virtualizer = raw.virtualizerRaw?.toIntOrNull() ?: 0
         device = raw.device
         loaded = true
     }
@@ -186,7 +179,12 @@ class AuroraState(private val context: Context) {
         // The preset key ends up inside a shell command; anything not in the table is rejected
         // here rather than escaped later.
         val safePreset = if (newPreset == "custom" || newPreset in Presets.KEYS) newPreset else "flat"
-        val targetCurve = newCurve ?: Presets.curve(Presets.indexOf(safePreset)).copyOf()
+        // "custom" is not in KEYS, so looking it up would land on index 0 - the flat curve. A
+        // call that only meant to change the switch or the strength would then overwrite the
+        // user's own curve with zeros. Keep the live curve in that case.
+        val targetCurve = newCurve
+            ?: if (safePreset == "custom") curve.copyOf()
+            else Presets.curve(Presets.indexOf(safePreset)).copyOf()
         val isCustom = newCurve != null || safePreset == "custom"
 
         val command = buildString {
@@ -229,11 +227,10 @@ class AuroraState(private val context: Context) {
         update(newCurve = saved)
     }
 
-    /** Writes the three advanced DSP parameters through su. */
+    /** Writes the two advanced DSP parameters through su. */
     suspend fun updateAdvanced(
         spread: Float = this.spread,
-        loudnessDb: Float = this.loudnessDb,
-        virtualizer: Int = this.virtualizer
+        loudnessDb: Float = this.loudnessDb
     ) {
         saving = true
         error = null
@@ -242,8 +239,6 @@ class AuroraState(private val context: Context) {
             append((spread * 10).toInt())
             append(" && settings put global ").append(AuroraEngine.K_LOUDNESS).append(' ')
             append((loudnessDb * 100).toInt())
-            append(" && settings put global ").append(AuroraEngine.K_VIRTUALIZER).append(' ')
-            append(virtualizer)
             append(" && echo AURORA_OK")
         }
         val output = withContext(Dispatchers.IO) { runRoot(cmd) }
@@ -254,7 +249,6 @@ class AuroraState(private val context: Context) {
         }
         this.spread = spread
         this.loudnessDb = loudnessDb
-        this.virtualizer = virtualizer
         refresh()
     }
 
