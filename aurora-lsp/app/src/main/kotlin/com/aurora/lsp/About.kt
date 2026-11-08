@@ -1,10 +1,8 @@
 package com.aurora.lsp
 
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.net.Uri
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,12 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -42,16 +36,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
 
 private const val BLOG_URL = "https://lingluandf.online"
-
-@Composable
-private fun rememberAsset(name: String): ImageBitmap? {
-    val context = LocalContext.current
-    return remember(name) {
-        runCatching {
-            context.assets.open(name).use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
-        }.getOrNull()
-    }
-}
 
 /** Avatar, name and the one-line bio, with a way out to the blog. */
 @Composable
@@ -92,10 +76,11 @@ fun CreatorCard(dark: Boolean) {
             }
         }
         Spacer(Modifier.height(14.dp))
+        // A plain row with a chevron. The tinted block read as a second call to action inside a
+        // card that already had one, and the accent belongs to the selection, not to a link.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
                 .clickable {
                     runCatching {
                         context.startActivity(
@@ -103,19 +88,18 @@ fun CreatorCard(dark: Boolean) {
                         )
                     }
                 }
-                .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
-                .padding(horizontal = 14.dp, vertical = 11.dp),
+                .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                Text("个人博客", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
+                Text("个人博客", fontSize = 15.sp, color = ink)
                 Text(
                     "lingluandf.online",
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                     color = muted
                 )
             }
-            Text("›", fontSize = 20.sp, color = accent)
+            Text("›", fontSize = 20.sp, color = muted)
         }
     }
 }
@@ -179,7 +163,7 @@ fun ProgramCard(dark: Boolean, versionName: String) {
             "只在小米 17 系列上验证过。其它品牌没有测试，不保证能用。",
             fontSize = 12.sp,
             lineHeight = 19.sp,
-            color = WarnColor
+            color = muted
         )
         Spacer(Modifier.height(16.dp))
         LinkDiagram(dark)

@@ -187,6 +187,22 @@ internal fun AuroraGroup(title: String? = null, content: @Composable ColumnScope
     }
 }
 
+/**
+ * Free-form content inside a group card.
+ *
+ * <p>Groups draw their card edge to edge so row dividers can reach it, which means anything not
+ * built from [AuroraRow] has to bring its own inset - otherwise the card's rounded corner cuts the
+ * first and last character of every line. That is what clipped the about text and the chart caption.
+ */
+@Composable
+internal fun PaddedBlock(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.card, vertical = Space.card)
+    ) { content() }
+}
+
 /** Hairline between rows of one group. Inset so it starts at the text, not at the card edge. */
 @Composable
 internal fun RowDivider(startInset: Dp = Space.card) {

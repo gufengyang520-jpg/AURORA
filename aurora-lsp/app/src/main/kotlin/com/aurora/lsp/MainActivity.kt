@@ -548,10 +548,26 @@ private fun StatusStrip(state: AuroraState) {
         }
     }
     val readings = buildString {
+        if (state.saving) append("写入中… · ")
         if (state.sessions.isNotEmpty()) append("会话 ").append(state.sessions).append(" · ")
         append("强度 ").append(state.strength).append("%")
     }
-    StatusCapsule(label = label, tone = tone, readings = readings)
+    Column(Modifier.fillMaxWidth()) {
+        StatusCapsule(label = label, tone = tone, readings = readings)
+        // A failed write has to be visible from wherever it happened. It used to be printed at the
+        // bottom of one page, so a failed preset tap on the equaliser page looked like nothing
+        // happened at all.
+        state.error?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                message,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                color = colors.error,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -652,17 +668,13 @@ private fun TonePage(
             AuroraRow(
                 title = "管理预设",
                 summary = "按应用分配，或把手上这条存下来命名",
-                trailing = { ValueText("管理", accent = true) },
+                trailing = { ValueText("管理") },
                 onClick = onOpenPresets
             )
         }
 
         AuroraGroup("声场与响度") {
             AdvancedSettingsPanel(state = state, dark = dark, scope = scope)
-        }
-
-        if (state.error != null) {
-            AuroraGroup { NoteText(state.error!!, error = true) }
         }
     }
 }
@@ -806,6 +818,7 @@ private fun EqPage(
 ) {
     val colors = MiuixTheme.colorScheme
     var strengthDraft by remember(state.strength) { mutableStateOf(state.strength.toFloat()) }
+    var confirmRestore by remember { mutableStateOf(false) }
     // A local copy of the curve while a finger is down. Writing straight through to Settings on
     // every pixel meant a su shell round trip per frame, and the thumb only moved once the write
     // came back - which is exactly what "拖不动" felt like.
@@ -874,7 +887,8 @@ private fun EqPage(
                 title = "恢复自存曲线",
                 summary = "回到上次保存下来的那条",
                 trailing = { ValueText("恢复", accent = true) },
-                onClick = { scope.launch { state.restoreSaved() } }
+                // Replacing the live curve throws away whatever was not saved, so it asks first.
+                onClick = { confirmRestore = true }
             )
             RowDivider()
             AuroraRow(
@@ -882,6 +896,19 @@ private fun EqPage(
                 summary = "给现在这条曲线起个名字，留在「我的预设」里",
                 trailing = { ValueText("保存", accent = true) },
                 onClick = { onOpenEditor(true) }
+            )
+        }
+
+        if (confirmRestore) {
+            ConfirmDialog(
+                title = "恢复自存曲线",
+                body = "现在这条曲线会被换掉，还没保存的调整就没了。",
+                confirmLabel = "恢复",
+                onConfirm = {
+                    confirmRestore = false
+                    scope.launch { state.restoreSaved() }
+                },
+                onDismiss = { confirmRestore = false }
             )
         }
     }
@@ -896,12 +923,15 @@ private fun EntryRow(
     detail: String,
     action: String,
     dark: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    // Navigating somewhere is not the same as changing something. Only the second kind carries the
+    // accent; a page full of coloured action words is what made this read as a generated screen.
+    accentAction: Boolean = false
 ) {
     AuroraRow(
         title = title,
         summary = detail,
-        trailing = { ValueText(action, accent = true) },
+        trailing = { ValueText(action, accent = accentAction) },
         onClick = onClick
     )
 }
@@ -1072,65 +1102,71 @@ private fun DiagPage(
             }
 
             AuroraGroup("实际写入") {
-                val bands = state.actualBands
-                if (bands != null) {
-                    CurvePreview(bands, accent, muted, showScale = true)
-                    Spacer(Modifier.height(4.dp))
-                    BandScale(muted)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "引擎当前下发到系统的增益，单位 dB，精度 0.1。",
-                        fontSize = 11.sp,
-                        color = muted
-                    )
-                } else {
-                    Text(
-                        "还没有写入记录。播一段音频，回到这里就能看到引擎实际下发的曲线。",
-                        fontSize = 12.sp,
-                        lineHeight = 19.sp,
-                        color = muted
-                    )
+                PaddedBlock {
+                    val bands = state.actualBands
+                    if (bands != null) {
+                        CurvePreview(bands, accent, muted, showScale = true)
+                        Spacer(Modifier.height(4.dp))
+                        BandScale(muted)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "引擎当前下发到系统的增益，单位 dB，精度 0.1。",
+                            fontSize = 11.sp,
+                            color = muted
+                        )
+                    } else {
+                        Text(
+                            "还没有写入记录。播一段音频，回到这里就能看到引擎实际下发的曲线。",
+                            fontSize = 12.sp,
+                            lineHeight = 19.sp,
+                            color = muted
+                        )
+                    }
                 }
             }
 
             AuroraGroup("系统回执") {
-                Row {
-                    ReceiptCell("后端状态", state.backendState.ifEmpty { "—" }, dark, Modifier.weight(1f))
-                    ReceiptCell("生效会话", state.applied.ifEmpty { "0" }, dark, Modifier.weight(1f))
+                PaddedBlock {
+                    Row {
+                        ReceiptCell("后端状态", state.backendState.ifEmpty { "—" }, dark, Modifier.weight(1f))
+                        ReceiptCell("生效会话", state.applied.ifEmpty { "0" }, dark, Modifier.weight(1f))
+                    }
+                    Row {
+                        ReceiptCell("挂载会话", state.sessions.ifEmpty { "无" }, dark, Modifier.weight(1f))
+                        ReceiptCell("叠加强度", state.strength.toString() + "%", dark, Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text("说明", fontSize = 11.sp, color = muted)
+                    Text(
+                        state.backendMessage.ifEmpty { "—" },
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        color = ink
+                    )
                 }
-                Row {
-                    ReceiptCell("挂载会话", state.sessions.ifEmpty { "无" }, dark, Modifier.weight(1f))
-                    ReceiptCell("叠加强度", state.strength.toString() + "%", dark, Modifier.weight(1f))
-                }
-                Spacer(Modifier.height(6.dp))
-                Text("说明", fontSize = 11.sp, color = muted)
-                Text(
-                    state.backendMessage.ifEmpty { "—" },
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    color = ink
-                )
             }
 
             AuroraGroup("运行日志") {
-                if (state.engineLog.isEmpty()) {
-                    Text(
-                        "还没有日志。播一段音频、切一次预设，这里就会出现最近 50 条状态变化。",
-                        fontSize = 12.sp,
-                        lineHeight = 19.sp,
-                        color = muted
-                    )
-                } else {
-                    Text(
-                        "最近 " + state.engineLog.size + " 条，最新的在最下面。长按可以选中复制。",
-                        fontSize = 11.sp,
-                        color = muted
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    SelectionContainer {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            state.engineLog.forEach { line ->
-                                Text(line, fontSize = 11.sp, lineHeight = 16.sp, color = ink)
+                PaddedBlock {
+                    if (state.engineLog.isEmpty()) {
+                        Text(
+                            "还没有日志。播一段音频、切一次预设，这里就会出现最近 50 条状态变化。",
+                            fontSize = 12.sp,
+                            lineHeight = 19.sp,
+                            color = muted
+                        )
+                    } else {
+                        Text(
+                            "最近 " + state.engineLog.size + " 条，最新的在最下面。长按可以选中复制。",
+                            fontSize = 11.sp,
+                            color = muted
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        SelectionContainer {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                state.engineLog.forEach { line ->
+                                    Text(line, fontSize = 11.sp, lineHeight = 16.sp, color = ink)
+                                }
                             }
                         }
                     }
@@ -1235,7 +1271,8 @@ private fun SettingsPage(
                     detail = versionName,
                     action = if (checking) "检查中" else "检查更新",
                     dark = dark,
-                    onClick = { if (!checking) onCheckUpdate() }
+                    onClick = { if (!checking) onCheckUpdate() },
+                    accentAction = true
                 )
                 if (message != null) {
                     RowDivider()
@@ -1257,16 +1294,17 @@ private fun SettingsPage(
                     detail = "用不了、听不出区别、界面不对，都可以在这里说",
                     action = "去反馈",
                     dark = dark,
-                    onClick = onFeedback
+                    onClick = onFeedback,
+                    accentAction = true
                 )
             }
 
             AuroraGroup("创作者") {
-                CreatorCard(dark)
+                PaddedBlock { CreatorCard(dark) }
             }
 
             AuroraGroup("关于") {
-                ProgramCard(dark, versionName)
+                PaddedBlock { ProgramCard(dark, versionName) }
             }
 
             SectionCard {
@@ -1335,6 +1373,61 @@ private fun UpdateDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 DialogAction("以后再说", false, dark, Modifier.weight(1f), onLater)
                 DialogAction("下载", true, dark, Modifier.weight(1f), onDownload)
+            }
+        }
+    }
+}
+
+/**
+ * Asks before something that throws work away.
+ *
+ * <p>Two taps, in the same shell as the update prompt: cancel on the left, the destructive choice
+ * on the right, neither of them coloured as if it were the happy path.
+ */
+@Composable
+private fun ConfirmDialog(
+    title: String,
+    body: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = MiuixTheme.colorScheme
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(colors.surfaceContainer)
+                .padding(20.dp)
+        ) {
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
+            Spacer(Modifier.height(6.dp))
+            Text(body, fontSize = 13.sp, lineHeight = 20.sp, color = colors.onSurfaceVariantSummary)
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.surfaceContainerHigh)
+                        .clickable(onClick = onDismiss)
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("取消", fontSize = 14.sp, color = colors.onSurface)
+                }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.error.copy(alpha = 0.16f))
+                        .clickable(onClick = onConfirm)
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(confirmLabel, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = colors.error)
+                }
             }
         }
     }
