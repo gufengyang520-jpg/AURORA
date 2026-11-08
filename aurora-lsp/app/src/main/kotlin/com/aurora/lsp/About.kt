@@ -1,8 +1,10 @@
 package com.aurora.lsp
 
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,7 +29,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -37,6 +44,16 @@ import androidx.compose.foundation.Canvas
 
 private const val BLOG_URL = "https://lingluandf.online"
 
+@Composable
+private fun rememberAsset(name: String): ImageBitmap? {
+    val context = LocalContext.current
+    return remember(name) {
+        runCatching {
+            context.assets.open(name).use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
+        }.getOrNull()
+    }
+}
+
 /** Avatar, name and the one-line bio, with a way out to the blog. */
 @Composable
 fun CreatorCard(dark: Boolean) {
@@ -44,25 +61,37 @@ fun CreatorCard(dark: Boolean) {
     val muted = if (dark) MutedDark else Muted
     val accent = if (dark) AccentDark else Accent
     val context = LocalContext.current
+    val avatar = rememberAsset("profile.jpg")
 
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // A monogram rather than the photo. Bitmaps drawn inside the dock's recorded backdrop
-            // layer were being painted at the window origin at full pixel size, and a letterform
-            // is the app's own material anyway.
+            // A bitmap inside the dock's recorded backdrop layer was painted at the window origin
+            // at full pixel size. Giving the image its own layer puts it in a child node, so the
+            // node's offset is what positions it and the bitmap stays where it belongs.
             Box(
                 modifier = Modifier
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                    .background(accent.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    "凌",
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MiuixTheme.colorScheme.primary
-                )
+                if (avatar != null) {
+                    Image(
+                        bitmap = avatar,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .graphicsLayer()
+                    )
+                } else {
+                    Text(
+                        "凌",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = accent
+                    )
+                }
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
@@ -111,6 +140,8 @@ fun ProgramCard(dark: Boolean, versionName: String) {
     val muted = if (dark) MutedDark else Muted
     val accent = if (dark) AccentDark else Accent
 
+    val banner = rememberAsset("ambient.webp")
+
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
@@ -119,17 +150,39 @@ fun ProgramCard(dark: Boolean, versionName: String) {
                 .clip(RoundedCornerShape(Radius.block))
                 .background(MiuixTheme.colorScheme.surfaceContainerHighest)
         ) {
-            // The band marks behind the wordmark are drawn in code, so they stay sharp at every
-            // density and survive being recorded into the dock's backdrop layer.
-            EqGlyph(
-                curve = Presets.curve(2),
-                color = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.12f),
-                height = 44.dp,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 20.dp)
-                    .width(120.dp)
-            )
+            if (banner != null) {
+                Image(
+                    bitmap = banner,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    // Same reason as the avatar: its own layer keeps the bitmap anchored to the
+                    // node instead of being replayed at the layer's origin.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer()
+                )
+                // A tone shift inside one neutral, so the white wordmark stays readable over
+                // whatever part of the artwork sits under it.
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color(0xE60B0F16), Color(0x330B0F16))
+                            )
+                        )
+                )
+            } else {
+                EqGlyph(
+                    curve = Presets.curve(2),
+                    color = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                    height = 44.dp,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 20.dp)
+                        .width(120.dp)
+                )
+            }
             Column(
                 Modifier
                     .align(Alignment.CenterStart)
@@ -139,12 +192,13 @@ fun ProgramCard(dark: Boolean, versionName: String) {
                     "AURORA",
                     fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = MiuixTheme.colorScheme.onSurface
+                    color = if (banner != null) Color.White else MiuixTheme.colorScheme.onSurface
                 )
                 Text(
                     "按播放会话挂载的多段均衡叠加",
                     fontSize = 11.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    color = if (banner != null) Color.White.copy(alpha = 0.72f)
+                    else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }

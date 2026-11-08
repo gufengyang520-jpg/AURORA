@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -17,10 +19,24 @@ android {
 
     signingConfigs {
         create("release") {
+            // The password is read from local.properties (git-ignored) first, then the environment,
+            // and only then falls back to the value this project has always used, so a plain
+            // checkout still builds. The keystore itself lives outside the repo, which is what
+            // actually keeps the upgrade channel safe; this just stops the password from being
+            // the first thing anyone reads in the source.
+            val localProps = Properties().apply {
+                val file = rootProject.file("local.properties")
+                if (file.exists()) file.inputStream().use { load(it) }
+            }
+            fun secret(key: String, env: String, fallback: String): String =
+                localProps.getProperty(key) ?: System.getenv(env) ?: fallback.also {
+                    logger.lifecycle("signing: no $key in local.properties or $env, using the default")
+                }
+
             storeFile = file("../out/aurora-observer.jks")
-            storePassword = "android"
-            keyAlias = "aurora-observer"
-            keyPassword = "android"
+            storePassword = secret("aurora.storePassword", "AURORA_STORE_PASSWORD", "android")
+            keyAlias = localProps.getProperty("aurora.keyAlias") ?: "aurora-observer"
+            keyPassword = secret("aurora.keyPassword", "AURORA_KEY_PASSWORD", "android")
         }
     }
 

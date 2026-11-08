@@ -143,7 +143,17 @@ class AuroraState(private val context: Context) {
 
     private fun apply(raw: Snapshot) {
         enabled = raw.enabled == "1"
-        raw.preset?.let { if (it.isNotEmpty() && it != "null") preset = it }
+        raw.preset?.takeIf { it.isNotEmpty() && it != "null" }?.let { stored ->
+            // An unknown key falls through to index 0 - the flat curve - which looks exactly like
+            // "the module does nothing". The fallback stays (flat is the safe state); it just
+            // stops being silent, so a typo is findable in the log.
+            if (stored == "custom" || stored in Presets.KEYS) {
+                preset = stored
+            } else {
+                preset = "flat"
+                AuroraLog.append(context, "preset", "unknown key '" + stored + "', falling back to flat")
+            }
+        }
         raw.strength?.toIntOrNull()?.let { strength = it.coerceIn(0, 100) }
         backendState = raw.state.orEmpty().let { if (it == "null") "" else it }
         backendMessage = raw.message.orEmpty().let { if (it == "null") "" else it }

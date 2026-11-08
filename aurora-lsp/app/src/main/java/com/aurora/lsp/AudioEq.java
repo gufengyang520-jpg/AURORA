@@ -164,8 +164,15 @@ public final class AudioEq {
                     // Channel 0 = left, channel 1 = right
                     setBandByChannel.invoke(effect, 0, i,
                             bandCtor.newInstance(true, BAND_HZ[i], clamp(gain + delta)));
-                    setBandByChannel.invoke(effect, 1, i,
-                            bandCtor.newInstance(true, BAND_HZ[i], clamp(gain - delta)));
+                    try {
+                        setBandByChannel.invoke(effect, 1, i,
+                                bandCtor.newInstance(true, BAND_HZ[i], clamp(gain - delta)));
+                    } catch (Throwable mono) {
+                        // The session has no second channel. Keep the band by putting it on all
+                        // channels: losing the widening is better than losing the curve, and
+                        // losing the whole write is worse than both.
+                        setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
+                    }
                 } else {
                     setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
                 }
