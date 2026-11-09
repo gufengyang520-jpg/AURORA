@@ -19,10 +19,10 @@ AURORA 换了个位置：它找到每一个**正在播放的音频会话**，逐
 ```
 App 会话  ──▶  系统混音  ──▶  AURORA  ──▶  扬声器
  session        AudioFlinger   实时 EQ      最后一道还原
-                                250 Hz – 6.3 kHz
+                                80 Hz – 10 kHz
 ```
 
-只做 250 Hz 到 6.3 kHz 这六段，是因为实测手机扬声器只在这段里能有效还原。往 47 Hz 或 12 kHz 上堆增益，曲线看着好看，耳朵听不出来。
+六段取 80 / 200 / 500 / 1.5k / 4k / 10k Hz：低频管冲击和浑浊，中频管人声，高频管空气感。不再往两端堆段，是因为手机扬声器在极低频和极高频上给不出可信的还原，段数堆多了只是曲线好看。
 
 ## 为什么不是 Dolby DAP
 
@@ -53,8 +53,9 @@ App 会话  ──▶  系统混音  ──▶  AURORA  ──▶  扬声器
 - 通过 LSPosed 注入 `system_server`，Hook `com.android.server.audio.AudioService#systemReady()`。
 - 所有音频调用都在私有的 `aurora-engine` 线程上执行。**绝不在 `system_server` 主线程上碰音频 HAL**——那会让 watchdog 杀掉系统进程，表现为 SystemUI 连环重启、壁纸变黑。
 - 每 2 秒扫一次活跃会话（`AudioManager#getActivePlaybackConfigurations`），给每个会话建一个 `DynamicsProcessing` 实例并写入曲线。
-- 每个新会话要在**第二个 tick 重建一次效果器**：MiSound 会在音轨开始时重建效果链，第一拍建的效果器会被孤悬——链上还在、`Enabled=y`，但不出声。
+- 每个新会话**延迟一拍再挂效果器**：MiSound 会在音轨开始时重建效果链，第一拍建的效果器会被孤悬——链上还在、`Enabled=y`，但不出声。所以第一次看到会话只登记，下一拍才创建，全程只建一次。
 - 曲线按最大绝对值等比缩放到 ±12 dB，不做减均值归一化。减均值会把预设的倾斜形状抹平，九套预设听起来就都一样了。
+- 除了六段曲线，还有两个不进曲线的参数：**声场宽度**（左右声道在中高频错开，靠双耳声级差做宽）和**感知响度**（`LoudnessEnhancer`，抬听感不抬峰值）。两者默认关闭。
 
 ## 诊断与反馈
 
@@ -66,7 +67,7 @@ App 会话  ──▶  系统混音  ──▶  AURORA  ──▶  扬声器
 
 ```bash
 cd aurora-lsp
-bash build.sh          # 产物：out/AURORA-1.2.0.apk
+bash build.sh          # 产物：out/AURORA-<versionName>.apk，版本号从 build.gradle.kts 读
 ```
 
 需要：JDK 17、Gradle 9.3.1、Android SDK `platforms/android-37` 与 `build-tools/37.0.0`，compileSdk 37 / minSdk 33 / targetSdk 36。

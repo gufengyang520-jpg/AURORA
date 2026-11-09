@@ -1,8 +1,9 @@
 # 音频模块（AURORA）· CONTEXT
 
-一句话摘要：这是一个用 LSPosed 注入 `system_server`、按**正在播放的音频会话**逐个挂载 `DynamicsProcessing` 软件均衡器、在音轨末端叠加六段曲线的 Android 调音模块；当前版本 **1.2.1**（`versionCode 1201`），仓库 `shisjsji/AURORA`，1.2.0 已推到 `994e5be`，1.2.1 本地待发布。
+一句话摘要：这是一个用 LSPosed 注入 system_server、按**正在播放的音频会话**逐个挂载 DynamicsProcessing 软件均衡器、在音轨末端叠加六段曲线（80/200/500/1.5k/4k/10k Hz）的 Android 调音模块；当前版本 **1.3.0**（ersionCode 1300），仓库 shisjsji/AURORA。
 
 > **本文件已于 2026-11-06 按 1.2.0 重写。** 旧版描述的「Dolby DAX3 `dap_hw` + 20 段 GEQ + AudioEffect 厂商参数通道」路线**已整体废弃**，对应代码 `DolbyDap.java` 已删除。若在别处读到 v1.5.0、20 段、`aurora_geq` 之外还带 profile 的说法，一律以本文件为准。
+> **1.3.0 变更**：界面按 DESIGN.md 整体重做（token 体系、miuix 分组与原生滑杆、液态玻璃只留在 Dock），新增声场宽度与感知响度两个参数、滑杆「恢复默认」、小屏紧凑模式；旧 Magisk 路线与 20 段 GEQ 描述均为历史。本文件里凡写「250–6300 Hz」的段落，频点以代码 AudioEq.BAND_HZ 为准。
 
 元信息：本次重写只读本地仓库（代码、构建配置、产物时间戳）加知识库 `aurora` 项目记忆，未连真机、未跑构建、未 ADB。所有结论都能在「相关文件路径」一节点到具体文件。
 

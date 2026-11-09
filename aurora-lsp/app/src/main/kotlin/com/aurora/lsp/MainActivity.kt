@@ -907,19 +907,23 @@ private fun EqPage(
                     trailing = { ValueText("恢复", accent = true) },
                     onClick = {
                         draftCurve = bandDefaults.copyOf()
-                        scope.launch { state.update(newCurve = bandDefaults.copyOf()) }
+                        scope.launch {
+                            state.update(newCurve = bandDefaults.copyOf(), keepSaved = true)
+                        }
                     }
                 )
                 RowDivider()
             }
-            AuroraRow(
-                title = "恢复自存曲线",
-                summary = "回到上次保存下来的那条",
-                trailing = { ValueText("恢复", accent = true) },
-                // Replacing the live curve throws away whatever was not saved, so it asks first.
-                onClick = { confirmRestore = true }
-            )
-            RowDivider()
+            if (state.savedCurve != null) {
+                AuroraRow(
+                    title = "恢复自存曲线",
+                    summary = "回到上次保存下来的那条",
+                    trailing = { ValueText("恢复", accent = true) },
+                    // Replacing the live curve throws away whatever was not saved, so it asks first.
+                    onClick = { confirmRestore = true }
+                )
+                RowDivider()
+            }
             AuroraRow(
                 title = "存为新预设",
                 summary = "给现在这条曲线起个名字，留在「我的预设」里",

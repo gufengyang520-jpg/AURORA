@@ -182,7 +182,13 @@ class AuroraState(private val context: Context) {
         newEnabled: Boolean = enabled,
         newPreset: String = preset,
         newStrength: Int = strength,
-        newCurve: FloatArray? = null
+        newCurve: FloatArray? = null,
+        /**
+         * Keep the "saved" slot untouched. Restoring a preset's built-in values is not a curve the
+         * user made, and writing it into the saved slot would replace the curve they did make -
+         * which is the only copy 恢复自存曲线 can bring back.
+         */
+        keepSaved: Boolean = false
     ) {
         saving = true
         error = null
@@ -207,9 +213,11 @@ class AuroraState(private val context: Context) {
             if (isCustom) {
                 val encoded = targetCurve.joinToString(",") { (it * 10).toInt().toString() }
                 append(" && settings put global ").append(AuroraEngine.K_GEQ).append(' ').append(encoded)
-                // Also keep a copy in the saved slot so switching presets later cannot lose it.
-                append(" && settings put global ")
-                    .append(AuroraEngine.K_GEQ_SAVED).append(' ').append(encoded)
+                if (!keepSaved) {
+                    // Keep a copy in the saved slot, so switching presets later cannot lose it.
+                    append(" && settings put global ")
+                        .append(AuroraEngine.K_GEQ_SAVED).append(' ').append(encoded)
+                }
             } else {
                 append(" && settings delete global ").append(AuroraEngine.K_GEQ)
             }
@@ -227,7 +235,7 @@ class AuroraState(private val context: Context) {
         preset = if (isCustom) "custom" else safePreset
         strength = newStrength
         curve = targetCurve
-        if (isCustom) savedCurve = targetCurve
+        if (isCustom && !keepSaved) savedCurve = targetCurve
         refresh()
     }
 
