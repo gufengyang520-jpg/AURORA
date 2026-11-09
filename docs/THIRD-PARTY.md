@@ -24,3 +24,9 @@
 - 用途：组件库与 `miuix-blur` 的 Backdrop / runtimeShaderEffect 能力。
 
 凌乱的风＆
+
+### 升级 miuix 时要人工复核的一处
+
+- FloatingBottomBar.kt 里的高光方向照抄了 miuix-blur 内部的 LIGHT_REF（0.5 / 0.7），源码注释已标注“keep in sync”。
+- 这是对库内部约定的依赖，不是公开 API：升级 miuix 后底栏高光方向可能静默改变，没有测试能发现。
+- 复核方法：升级后对照 miuix-blur 源码里的 LIGHT_REF 常量，不一致就同步 LIGHT_REF_X/Y。

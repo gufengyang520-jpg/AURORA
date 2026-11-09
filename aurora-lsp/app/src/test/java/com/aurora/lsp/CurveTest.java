@@ -38,12 +38,23 @@ public class CurveTest {
 
     @Test
     public void peakIsCappedNotOvershot() {
-        // 80 Hz asks for +10. The preamp shifts the curve to a +6 peak, then the per-band ceiling
-        // pulls the bottom band to +4. If either step is skipped this comes out at 6 or 10.
+        // 80 Hz asks for +10. The preamp shifts the whole curve down until its loudest band sits at
+        // +6, so the result is +6, not +10. This used to assert +4 because the 80 Hz band had its
+        // own 4 dB ceiling; that ceiling is 8 dB now, so the preamp is what does the work here.
         float[] out = AuroraEngine.buildGains(
                 config(new float[]{10, 8, 2, -3, -9, -11}, 100), speaker(), 100);
-        assertEquals(4f, out[0], 0.01f);
-        assertTrue("no band may exceed the per-band ceiling", out[5] <= 4.01f);
+
+        assertEquals("the preamp must pull the loudest band down to +6", 6f, out[0], 0.01f);
+        for (float gain : out) {
+            assertTrue("no band may sit above the preamp ceiling", gain <= 6.01f);
+        }
+
+        // Shifting the whole curve is what keeps the preset's shape: the gaps between bands are the
+        // same as in the source curve. Anything that normalised per band would break this.
+        assertEquals("80 Hz vs 500 Hz gap must survive the shift", -8f, out[2] - out[0], 0.01f);
+        assertEquals("80 Hz vs 200 Hz gap must survive the shift", -2f, out[1] - out[0], 0.01f);
+
+        assertEquals("the quietest band still lands on the floor limit", -12f, out[5], 0.01f);
     }
 
     @Test

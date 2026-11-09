@@ -86,8 +86,8 @@ fun ThemePanel(
     onPick: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
+    val ink = Ink
+    val muted = Muted
     val selected = AuroraPalette.currentId
 
     PanelScaffold(

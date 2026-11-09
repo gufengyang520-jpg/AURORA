@@ -182,13 +182,7 @@ class AuroraState(private val context: Context) {
         newEnabled: Boolean = enabled,
         newPreset: String = preset,
         newStrength: Int = strength,
-        newCurve: FloatArray? = null,
-        /**
-         * Keep the "saved" slot untouched. Restoring a preset's built-in values is not a curve the
-         * user made, and writing it into the saved slot would replace the curve they did make -
-         * which is the only copy 恢复自存曲线 can bring back.
-         */
-        keepSaved: Boolean = false
+        newCurve: FloatArray? = null
     ) {
         saving = true
         error = null
@@ -213,29 +207,36 @@ class AuroraState(private val context: Context) {
             if (isCustom) {
                 val encoded = targetCurve.joinToString(",") { (it * 10).toInt().toString() }
                 append(" && settings put global ").append(AuroraEngine.K_GEQ).append(' ').append(encoded)
-                if (!keepSaved) {
-                    // Keep a copy in the saved slot, so switching presets later cannot lose it.
-                    append(" && settings put global ")
-                        .append(AuroraEngine.K_GEQ_SAVED).append(' ').append(encoded)
-                }
+                // Keep a copy in the saved slot, so switching presets later cannot lose it. Only a
+                // hand-edited curve reaches this branch; restoring a preset writes no custom curve
+                // at all, so the saved slot is never replaced by one.
+                append(" && settings put global ")
+                    .append(AuroraEngine.K_GEQ_SAVED).append(' ').append(encoded)
             } else {
                 append(" && settings delete global ").append(AuroraEngine.K_GEQ)
             }
             append(" && echo AURORA_OK")
         }
 
-        val output = withContext(Dispatchers.IO) { runRoot(command) }
+        val output = if (command == lastCommand) {
+            // Same command, same effect. A double tap no longer forks su twice.
+            saving = false
+            return
+        } else {
+            withContext(Dispatchers.IO) { runRoot(command) }
+        }
         saving = false
         if (!output.contains("AURORA_OK")) {
             AuroraLog.append(context, "save", "failed: " + output.take(200))
             error = "保存失败。请确认已给 AURORA 授予 Root 权限后重试。当前设置没有丢失。"
             return
         }
+        lastCommand = command
         enabled = newEnabled
         preset = if (isCustom) "custom" else safePreset
         strength = newStrength
         curve = targetCurve
-        if (isCustom && !keepSaved) savedCurve = targetCurve
+        if (isCustom) savedCurve = targetCurve
         refresh()
     }
 
@@ -265,6 +266,7 @@ class AuroraState(private val context: Context) {
             error = "保存失败。请确认已给 AURORA 授予 Root 权限。"
             return
         }
+        lastCommand = cmd
         this.spread = spread
         this.loudnessDb = loudnessDb
         refresh()
@@ -370,18 +372,21 @@ class AuroraState(private val context: Context) {
 
     /** Writes one JSON key through su, then reloads so the UI reflects what actually landed. */
     private suspend fun commit(key: String, json: String) {
-        val escaped = json.replace("'", "'\\''")
-        val output = withContext(Dispatchers.IO) {
-            runRoot("settings put global $key '$escaped' && echo AURORA_OK")
-        }
+        val command = "settings put global $key '" + json.replace("'", "'\\''") + "' && echo AURORA_OK"
+        if (command == lastCommand) return
+        val output = withContext(Dispatchers.IO) { runRoot(command) }
         if (!output.contains("AURORA_OK")) {
             AuroraLog.append(context, "preset", "write failed: " + output.take(160))
             error = "保存失败。请确认已给 AURORA 授予 Root 权限。"
             return
         }
+        lastCommand = command
         error = null
         refresh()
     }
+
+    /** Last shell command that succeeded, so tapping the same thing twice forks su once. */
+    private var lastCommand: String = ""
 
     private fun runRoot(command: String): String {
         val output = StringBuilder()

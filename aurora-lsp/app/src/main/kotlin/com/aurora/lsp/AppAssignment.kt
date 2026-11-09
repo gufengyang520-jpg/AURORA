@@ -62,9 +62,9 @@ fun PresetPanel(
     scope: CoroutineScope,
     onDismiss: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
     val surface = MiuixTheme.colorScheme.surface
     val card = MiuixTheme.colorScheme.surfaceContainer
     val context = LocalContext.current
@@ -328,9 +328,9 @@ private fun PresetChoice(
     dark: Boolean,
     onPick: (String?) -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
 
     Column {
         ChoiceRow("跟随全局预设", selected == null, ink, muted, accent) { onPick(null) }

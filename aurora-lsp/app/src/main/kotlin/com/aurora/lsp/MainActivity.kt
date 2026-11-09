@@ -133,7 +133,7 @@ class MainActivity : ComponentActivity() {
 //
 // These used to be four hard-coded greys, which is why screens did not share a ramp with the
 // MIUIX surfaces around them. They are now aliases for the theme's own semantic roles, so a screen
-// that still says `if (dark) InkDark else Ink` is automatically correct - both branches resolve to
+// that still says `Ink` is automatically correct - both branches resolve to
 // the same role, and only the theme decides the value.
 internal val Ink: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.onSurface
 internal val InkDark: Color @Composable @ReadOnlyComposable get() = MiuixTheme.colorScheme.onSurface
@@ -907,9 +907,10 @@ private fun EqPage(
                     trailing = { ValueText("恢复", accent = true) },
                     onClick = {
                         draftCurve = bandDefaults.copyOf()
-                        scope.launch {
-                            state.update(newCurve = bandDefaults.copyOf(), keepSaved = true)
-                        }
+                        // Re-select the preset instead of writing its values as a new custom curve:
+                        // same sound, and the page keeps saying which preset it is rather than
+                        // turning into 自定义曲线 the moment you ask for the original back.
+                        scope.launch { state.update(newPreset = state.preset) }
                     }
                 )
                 RowDivider()
@@ -1035,9 +1036,9 @@ private fun DiagPage(
     adaptation: String?,
     onRequestAdaptation: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
     val context = LocalContext.current
     val player = remember { TonePlayer() }
     var playing by remember { mutableStateOf(false) }
@@ -1227,8 +1228,8 @@ private fun ReceiptCell(
     modifier: Modifier = Modifier
 ) {
     Column(modifier.padding(vertical = 5.dp)) {
-        Text(key, fontSize = 11.sp, color = if (dark) MutedDark else Muted)
-        Text(value, fontSize = 14.sp, color = if (dark) InkDark else Ink)
+        Text(key, fontSize = 11.sp, color = Muted)
+        Text(value, fontSize = 14.sp, color = Ink)
     }
 }
 
@@ -1248,9 +1249,9 @@ private fun SettingsPage(
     message: String?,
     onCheckUpdate: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
 
     AuroraPage(
         title = "设置",
@@ -1387,9 +1388,9 @@ private fun UpdateDialog(
     onLater: () -> Unit,
     onDownload: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
 
     Dialog(onDismissRequest = onLater) {
         Column(
@@ -1483,7 +1484,7 @@ private fun DialogAction(
     modifier: Modifier,
     onClick: () -> Unit
 ) {
-    val accent = if (dark) AccentDark else Accent
+    val accent = Accent
     Box(
         modifier
             .clip(RoundedCornerShape(12.dp))
@@ -1502,7 +1503,7 @@ private fun DialogAction(
             label,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
-            color = if (primary) accent else (if (dark) InkDark else Ink)
+            color = if (primary) accent else (Ink)
         )
     }
 }

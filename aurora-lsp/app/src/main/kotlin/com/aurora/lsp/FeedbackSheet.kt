@@ -71,9 +71,9 @@ fun FeedbackSheet(
     onSubmit: (problem: String, text: String, withLogs: Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
     val card = if (dark) Color(0xFF1C1F24) else Color.White
 
     var problem by remember { mutableStateOf(PROBLEMS.first().second) }

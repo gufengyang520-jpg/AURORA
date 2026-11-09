@@ -154,19 +154,21 @@ public final class AudioEq {
         if (effect == null) return false;
         try {
             int used = Math.min(bandCount, Math.min(BANDS, gains == null ? 0 : gains.length));
-            boolean perChannel = spread != null && setBandByChannel != null;
+            boolean perChannel = setBandByChannel != null;
             for (int i = 0; i < used; i++) {
                 float gain = Math.max(-MAX_DB, Math.min(MAX_DB, gains[i]));
                 // Surplus bands are left untouched: DynamicsProcessing reports them flat by
-                // default, and parking them all on 6.3 kHz stacked filters we never meant to add.
-                if (perChannel && BAND_HZ[i] >= 500f) {
+                // default, and parking them all on the top band stacked filters we never meant to
+                // add.
+                if (perChannel && widened(spread, i)) {
                     float delta = Math.max(-8f, Math.min(8f, spread[i]));
+                    float[] pair = channelGains(gain, delta);
                     // Channel 0 = left, channel 1 = right
                     setBandByChannel.invoke(effect, 0, i,
-                            bandCtor.newInstance(true, BAND_HZ[i], clamp(gain + delta)));
+                            bandCtor.newInstance(true, BAND_HZ[i], pair[0]));
                     try {
                         setBandByChannel.invoke(effect, 1, i,
-                                bandCtor.newInstance(true, BAND_HZ[i], clamp(gain - delta)));
+                                bandCtor.newInstance(true, BAND_HZ[i], pair[1]));
                     } catch (Throwable mono) {
                         // The session has no second channel. Keep the band by putting it on all
                         // channels: losing the widening is better than losing the curve, and
@@ -197,6 +199,28 @@ public final class AudioEq {
 
     private static float clamp(float v) {
         return Math.max(-MAX_DB, Math.min(MAX_DB, v));
+    }
+
+    /** Below this the two channels get the same gain: separating bass makes it thin, not wide. */
+    static final float WIDEN_FROM_HZ = 500f;
+
+    /**
+     * Whether this band is written per channel.
+     *
+     * <p>Split out of the reflection call so the rule itself can be tested on a plain JVM - the
+     * effect object cannot be built there, but the decision it depends on can.
+     */
+    static boolean widened(float[] spread, int bandIndex) {
+        return spread != null
+                && bandIndex >= 0
+                && bandIndex < spread.length
+                && bandIndex < BAND_HZ.length
+                && BAND_HZ[bandIndex] >= WIDEN_FROM_HZ;
+    }
+
+    /** Left and right gains for one band, clamped the same way the single-channel path is. */
+    static float[] channelGains(float gain, float delta) {
+        return new float[]{clamp(gain + delta), clamp(gain - delta)};
     }
 
     public synchronized boolean isApplied() {

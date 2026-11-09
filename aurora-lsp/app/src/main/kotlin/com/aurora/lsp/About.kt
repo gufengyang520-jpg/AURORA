@@ -57,9 +57,9 @@ private fun rememberAsset(name: String): ImageBitmap? {
 /** Avatar, name and the one-line bio, with a way out to the blog. */
 @Composable
 fun CreatorCard(dark: Boolean) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
     val context = LocalContext.current
     val avatar = rememberAsset("profile.jpg")
 
@@ -136,9 +136,9 @@ fun CreatorCard(dark: Boolean) {
 /** The program's own card: banner, one-line pitch, and where the module sits in the audio path. */
 @Composable
 fun ProgramCard(dark: Boolean, versionName: String) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
 
     val banner = rememberAsset("ambient.webp")
 
@@ -238,9 +238,9 @@ fun ProgramCard(dark: Boolean, versionName: String) {
  */
 @Composable
 private fun LinkDiagram(dark: Boolean) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
     val line = if (dark) Color(0xFF3A4048) else Color(0xFFD5DAE2)
 
     Row(

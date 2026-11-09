@@ -77,8 +77,8 @@ internal fun PanelScaffold(
             backProgress = 0f
         }
     }
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
+    val ink = Ink
+    val muted = Muted
     // Same surface the main pages paint, so a second-level screen never looks like a
     // different app. The old hard-coded 0xFF0E1013 read blue against it.
     val surface = MiuixTheme.colorScheme.surface
@@ -152,8 +152,8 @@ internal fun PanelButton(
     onClick: () -> Unit,
     enabled: Boolean = true
 ) {
-    val ink = if (dark) InkDark else Ink
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val accent = Accent
     Box(
         modifier
             .clip(RoundedCornerShape(14.dp))
@@ -183,8 +183,8 @@ internal fun PanelButton(
 
 @Composable
 internal fun KeyValueRow(key: String, value: String, dark: Boolean) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
+    val ink = Ink
+    val muted = Muted
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
         Text(key, fontSize = 12.sp, color = muted, modifier = Modifier.width(74.dp))
         Text(value.ifBlank { "—" }, fontSize = 12.sp, lineHeight = 17.sp, color = ink)
@@ -197,15 +197,15 @@ internal fun PanelLabel(text: String, dark: Boolean) {
         text,
         fontSize = 12.sp,
         fontWeight = FontWeight.Medium,
-        color = if (dark) MutedDark else Muted,
+        color = Muted,
         modifier = Modifier.padding(start = 4.dp, top = 6.dp)
     )
 }
 
 @Composable
 internal fun StepRow(index: String, text: String, dark: Boolean) {
-    val ink = if (dark) InkDark else Ink
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val accent = Accent
     Row(Modifier.padding(vertical = 5.dp), verticalAlignment = Alignment.Top) {
         Box(
             Modifier
@@ -235,8 +235,8 @@ fun OnboardingPanel(
     onOpenDevice: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
+    val ink = Ink
+    val muted = Muted
     val ready = profile.supported
     val started = profile.probed
 
@@ -345,8 +345,8 @@ fun DevicePanel(
     profile: DeviceProfile,
     onDismiss: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
+    val ink = Ink
+    val muted = Muted
 
     val effects = remember(profile.effects) { splitItems(profile.effects) }
     val outputs = remember(profile.outputs) { splitItems(profile.outputs) }

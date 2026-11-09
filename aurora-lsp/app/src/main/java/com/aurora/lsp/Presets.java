@@ -62,6 +62,19 @@ public final class Presets {
         return 0;
     }
 
+    /**
+     * Whether the key names a preset that exists.
+     *
+     * <p>{@link #indexOf} answers 0 for anything it does not know, which is the safe value for a
+     * lookup but indistinguishable from a genuine "flat". Callers that want to tell a typo from a
+     * real choice ask this instead.
+     */
+    public static boolean hasKey(String key) {
+        if (key == null) return false;
+        for (String candidate : KEYS) if (candidate.equals(key)) return true;
+        return false;
+    }
+
     public static float[] curve(int index) {
         int safe = Math.max(0, Math.min(CURVES.length - 1, index));
         return CURVES[safe];

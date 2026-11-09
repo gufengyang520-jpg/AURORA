@@ -72,6 +72,8 @@ public final class AuroraEngine {
     private final java.text.SimpleDateFormat clock =
             new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US);
     private final Map<Integer, String> uidPackages = new HashMap<>();
+    /** Last unknown preset key already written to the log, so a bad value is reported once. */
+    private String lastUnknownPreset;
     private Method getActiveConfigs;
     private Method getSessionId;
     private Method getPlayerState;
@@ -481,6 +483,18 @@ public final class AuroraEngine {
             config.appMap = parseAppMap(Settings.Global.getString(resolver, K_APP_MAP));
             config.spread = clamp(Settings.Global.getInt(resolver, K_SPREAD, 0), 0, 80) / 10f;
             config.loudnessMb = clamp(Settings.Global.getInt(resolver, K_LOUDNESS, 0), 0, 500);
+            // An unknown key still resolves to the flat curve - that is the safe value - but it
+            // used to do so silently, which looks exactly like "the module does nothing". Say it
+            // once per distinct bad value instead of every tick.
+            String stored = config.preset;
+            boolean unknown = stored != null && !stored.isEmpty()
+                    && !"custom".equals(stored) && !Presets.hasKey(stored);
+            if (unknown && !stored.equals(lastUnknownPreset)) {
+                lastUnknownPreset = stored;
+                record(resolver, "warn", "未知预设 " + stored + "，按原厂平直处理");
+            } else if (!unknown) {
+                lastUnknownPreset = null;
+            }
         } catch (Throwable error) {
             Log.w(TAG, "config read failed: " + AudioEq.describe(error));
             if (lastGood != null) return lastGood;

@@ -44,9 +44,9 @@ fun EqEditorPanel(
     initial: FloatArray,
     onDismiss: () -> Unit
 ) {
-    val ink = if (dark) InkDark else Ink
-    val muted = if (dark) MutedDark else Muted
-    val accent = if (dark) AccentDark else Accent
+    val ink = Ink
+    val muted = Muted
+    val accent = Accent
     val field = MiuixTheme.colorScheme.surfaceContainer
 
     var curve by remember { mutableStateOf(initial.copyOf()) }
