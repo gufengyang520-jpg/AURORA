@@ -680,7 +680,7 @@ private fun TonePage(
         }
 
         AuroraGroup("声场与响度") {
-            AdvancedSettingsPanel(state = state, dark = dark, scope = scope)
+            AdvancedSettingsPanel(state = state, scope = scope)
         }
     }
 }

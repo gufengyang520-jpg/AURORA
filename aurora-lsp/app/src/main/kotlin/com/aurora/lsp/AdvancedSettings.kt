@@ -30,7 +30,6 @@ import kotlin.math.abs
 @Composable
 internal fun AdvancedSettingsPanel(
     state: AuroraState,
-    dark: Boolean,
     scope: CoroutineScope
 ) {
     val colors = MiuixTheme.colorScheme
