@@ -122,7 +122,8 @@ fun EqEditorPanel(
         PanelCard(dark) {
             CurvePreview(curve, accent, muted, showScale = true)
             Spacer(Modifier.height(6.dp))
-            AudioEq.BAND_HZ.forEachIndexed { index, hz ->
+            val activeHz = state.engineBandHz ?: AudioEq.BAND_HZ
+            activeHz.forEachIndexed { index, hz ->
                 BandRow(
                     label = bandLabel(hz),
                     value = curve[index],

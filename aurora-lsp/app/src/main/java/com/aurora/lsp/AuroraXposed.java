@@ -143,7 +143,7 @@ public final class AuroraXposed implements IXposedHookLoadPackage {
             String[] keys = {
                     AuroraEngine.K_ENABLED, AuroraEngine.K_PANIC, AuroraEngine.K_PRESET,
                     AuroraEngine.K_STRENGTH, AuroraEngine.K_GEQ, AuroraEngine.K_SELFTEST,
-                    AuroraEngine.K_USER_PRESETS, AuroraEngine.K_APP_MAP
+                    AuroraEngine.K_USER_PRESETS, AuroraEngine.K_APP_MAP, AuroraEngine.K_PACK
             };
             for (String key : keys) {
                 resolver.registerContentObserver(Settings.Global.getUriFor(key), false, observer);

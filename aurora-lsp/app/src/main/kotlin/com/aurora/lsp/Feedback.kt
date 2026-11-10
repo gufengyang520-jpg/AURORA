@@ -121,6 +121,11 @@ object Feedback {
             put("versionName", versionName)
             put("probedAt", profile.probedAt)
             put("anonId", anonId(prefs))
+            // Whether the engine could actually write is the other half of the story: a device
+            // can pass the probe and still reject every band, which used to be invisible here.
+            put("backend", profile.backendState)
+            put("backendMessage", profile.backendMessage)
+            put("bandHz", profile.bandHz)
         }.toString()
 
         try {

@@ -225,6 +225,19 @@ private fun AuroraApp() {
         if (ui.autoCheckUpdate) runUpdateCheck(manual = false)
     }
 
+    // Adaptation is fetched the moment the module is on: by then root has been granted, so the
+    // pack write cannot trigger a surprise su prompt on a fresh install.
+    LaunchedEffect(state.enabled, state.device.model) {
+        if (!state.enabled || state.device.model.isBlank()) return@LaunchedEffect
+        when (val result = DevicePack.checkAndApply(state)) {
+            is DevicePack.Result.Applied ->
+                AuroraLog.append(context, "pack", "applied: " + result.name)
+            is DevicePack.Result.Unchanged, DevicePack.Result.NoMatch -> Unit
+            is DevicePack.Result.Failed ->
+                AuroraLog.append(context, "pack", "check failed: " + result.reason)
+        }
+    }
+
     LaunchedEffect(Unit) {
         state.refresh()
         while (true) {
@@ -801,11 +814,11 @@ private fun rememberAnimatedBands(target: FloatArray): FloatArray {
 }
 
 @Composable
-private fun BandScale(color: Color) {
+private fun BandScale(color: Color, hz: FloatArray = AudioEq.BAND_HZ) {
     Row(Modifier.fillMaxWidth()) {
-        AudioEq.BAND_HZ.forEach { hz ->
+        hz.forEach { value ->
             Text(
-                bandLabel(hz),
+                bandLabel(value),
                 fontSize = 9.sp,
                 color = color,
                 textAlign = TextAlign.Center,
@@ -842,12 +855,13 @@ private fun EqPage(
             Column(Modifier.padding(Space.card)) {
                 CurvePreview(draftCurve, colors.primary, colors.dividerLine, showScale = true)
                 Spacer(Modifier.height(6.dp))
-                BandScale(colors.onSurfaceVariantSummary)
+                BandScale(colors.onSurfaceVariantSummary, state.engineBandHz ?: AudioEq.BAND_HZ)
             }
         }
 
         AuroraGroup("六个频段") {
-            AudioEq.BAND_HZ.forEachIndexed { index, hz ->
+            val activeHz = state.engineBandHz ?: AudioEq.BAND_HZ
+            activeHz.forEachIndexed { index, hz ->
                 if (index > 0) RowDivider()
                 BandRow(
                     label = bandLabel(hz),
@@ -1096,6 +1110,55 @@ private fun DiagPage(
                     Spacer(Modifier.height(6.dp))
                     Text(state.backendMessage, fontSize = 11.sp, lineHeight = 17.sp, color = muted)
                 }
+                val adaptNote = buildString {
+                    state.packName?.let { append("设备适配包：$it") }
+                    if (state.adapt.contains("fallback")) {
+                        if (isNotEmpty()) append("，")
+                        append("频点已回退到 250 Hz–6.3 kHz")
+                    }
+                    if (isEmpty() && state.engineBandHz != null) append("按兼容频点运行")
+                }
+                if (adaptNote.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(adaptNote, fontSize = 11.sp, lineHeight = 17.sp, color = muted)
+                }
+                var packChecking by remember { mutableStateOf(false) }
+                var packNote by remember { mutableStateOf<String?>(null) }
+                run {
+                    // Manual entry point for the same check the app runs when the module turns on:
+                    // a pack can appear on the server after the user already enabled AURORA.
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        if (packChecking) "正在检查适配包…" else "检查适配包",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = accent,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f))
+                            .clickable {
+                                if (!packChecking) {
+                                    packChecking = true
+                                    packNote = null
+                                    scope.launch {
+                                        packNote = when (val r = DevicePack.checkAndApply(state)) {
+                                            is DevicePack.Result.Applied -> "已应用适配包：" + r.name
+                                            is DevicePack.Result.Unchanged -> "适配包没有变化。"
+                                            DevicePack.Result.NoMatch ->
+                                                "服务器上还没有这台机器的适配包。"
+                                            is DevicePack.Result.Failed -> "检查失败：" + r.reason
+                                        }
+                                        packChecking = false
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    )
+                    packNote?.let { note ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(note, fontSize = 11.sp, lineHeight = 17.sp, color = muted)
+                    }
+                }
                 run {
                     // Always offer the upload, even on a device that already works. Adaptation is
                     // only useful if the author can compare chains across models, and a device
@@ -1151,7 +1214,7 @@ private fun DiagPage(
                     if (bands != null) {
                         CurvePreview(bands, accent, muted, showScale = true)
                         Spacer(Modifier.height(4.dp))
-                        BandScale(muted)
+                        BandScale(muted, state.engineBandHz ?: AudioEq.BAND_HZ)
                         Spacer(Modifier.height(8.dp))
                         Text(
                             "引擎当前下发到系统的增益，单位 dB，精度 0.1。",

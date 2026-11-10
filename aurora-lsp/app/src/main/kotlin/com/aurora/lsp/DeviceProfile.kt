@@ -20,7 +20,15 @@ data class DeviceProfile(
     val outputs: String = "",
     val route: String = "",
     val probedAt: Long = 0L,
-    val engineVersion: Int = -1
+    val engineVersion: Int = -1,
+    /**
+     * What the engine last reported about this device. The probe says whether the chain can be
+     * built; these say whether writes actually land - the 17 Ultra could pass the probe while
+     * rejecting every band, and that gap was invisible in the reported profiles.
+     */
+    val backendState: String = "",
+    val backendMessage: String = "",
+    val bandHz: String = ""
 ) {
     /** Probe never wrote anything: the module is not running at all. */
     val probed: Boolean get() = probedAt > 0L
@@ -60,7 +68,10 @@ data class DeviceProfile(
             AuroraProbe.K_OUTPUTS,
             AuroraProbe.K_ROUTE,
             AuroraProbe.K_PROBED_AT,
-            AuroraEngine.R_ENGINE_VERSION
+            AuroraEngine.R_ENGINE_VERSION,
+            AuroraEngine.R_STATE,
+            AuroraEngine.R_MESSAGE,
+            AuroraEngine.R_BANDHZ
         )
 
         /** Reads off the main thread: ten Settings.Global lookups are ten binder round trips. */
@@ -85,7 +96,10 @@ data class DeviceProfile(
                 outputs = values[7],
                 route = values[8],
                 probedAt = values[9].toLongOrNull() ?: 0L,
-                engineVersion = values[10].toIntOrNull() ?: -1
+                engineVersion = values[10].toIntOrNull() ?: -1,
+                backendState = values[11],
+                backendMessage = values[12],
+                bandHz = values[13]
             )
         }
     }

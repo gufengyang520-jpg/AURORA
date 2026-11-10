@@ -74,6 +74,18 @@ class AuroraState(private val context: Context) {
     var actualBands by mutableStateOf<FloatArray?>(null)
         private set
 
+    /** Band table the engine actually drives (device pack or fallback), or null for the default. */
+    var engineBandHz by mutableStateOf<FloatArray?>(null)
+        private set
+
+    /** "pack:<name>", "fallback" or a combination, when adapted settings are in force. */
+    var adapt by mutableStateOf("")
+        private set
+
+    /** Name of the device pack currently stored, read straight from Settings (no root needed). */
+    var packName by mutableStateOf<String?>(null)
+        private set
+
     /** What the module found when it probed this device at boot. */
     var device by mutableStateOf(DeviceProfile())
         private set
@@ -104,6 +116,9 @@ class AuroraState(private val context: Context) {
         val appMapRaw: String?,
         val spreadRaw: String?,
         val loudnessRaw: String?,
+        val bandHzRaw: String?,
+        val adaptRaw: String?,
+        val packRaw: String?,
         val device: DeviceProfile
     )
 
@@ -137,6 +152,9 @@ class AuroraState(private val context: Context) {
             appMapRaw = read(AuroraEngine.K_APP_MAP),
             spreadRaw = read(AuroraEngine.K_SPREAD),
             loudnessRaw = read(AuroraEngine.K_LOUDNESS),
+            bandHzRaw = read(AuroraEngine.R_BANDHZ),
+            adaptRaw = read(AuroraEngine.R_ADAPT),
+            packRaw = read(AuroraEngine.K_PACK),
             device = DeviceProfile.read(resolver2)
         )
     }
@@ -174,8 +192,50 @@ class AuroraState(private val context: Context) {
         appMap = parseAppMap(raw.appMapRaw)
         spread = (raw.spreadRaw?.toIntOrNull() ?: 0) / 10f
         loudnessDb = ((raw.loudnessRaw?.toIntOrNull() ?: 0) / 100f)
+        engineBandHz = parseHz(raw.bandHzRaw)
+        adapt = raw.adaptRaw.orEmpty().let { if (it == "null") "" else it }
+        packName = raw.packRaw
+            ?.takeIf { it.isNotBlank() && it != "null" }
+            ?.let { runCatching { JSONObject(it).optString("name") }.getOrNull() }
+            ?.takeIf { it.isNotBlank() }
         device = raw.device
         loaded = true
+    }
+
+    private fun parseHz(raw: String?): FloatArray? {
+        if (raw.isNullOrBlank() || raw == "null") return null
+        val parts = raw.split(",")
+        if (parts.size != AudioEq.BANDS) return null
+        return FloatArray(AudioEq.BANDS) { parts[it].trim().toFloatOrNull() ?: return null }
+    }
+
+    /**
+     * Stores a device pack fetched from the release host. The engine picks it up within one
+     * observer-triggered tick. Null clears the pack.
+     */
+    suspend fun applyDevicePack(json: String?): Boolean {
+        val command = if (json.isNullOrBlank()) {
+            "settings delete global " + AuroraEngine.K_PACK + " && echo AURORA_OK"
+        } else {
+            "settings put global " + AuroraEngine.K_PACK + " '" +
+                    json.replace("'", "'\\''") + "' && echo AURORA_OK"
+        }
+        if (command == lastCommand) return true
+        val output = withContext(Dispatchers.IO) { runRoot(command) }
+        if (!output.contains("AURORA_OK")) {
+            AuroraLog.append(context, "pack", "write failed: " + output.take(160))
+            return false
+        }
+        lastCommand = command
+        refresh()
+        return true
+    }
+
+    /** The raw pack JSON currently stored, readable without root. */
+    fun currentPackRaw(): String? = try {
+        Settings.Global.getString(context.contentResolver, AuroraEngine.K_PACK)
+    } catch (t: Throwable) {
+        null
     }
 
     suspend fun update(

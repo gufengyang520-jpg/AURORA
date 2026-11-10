@@ -48,6 +48,25 @@ public final class AudioEq {
     private String lastError = "";
     private String signature = "";
     private boolean applied;
+    private float limiterThreshold = -3f;
+    private float limiterRatio = 10f;
+    private float limiterAttackMs = 5f;
+    private float limiterReleaseMs = 60f;
+
+    /** Limiter shape for this device; comes from the device pack, or the code default. */
+    public static final class LimiterConfig {
+        public final float thresholdDb;
+        public final float ratio;
+        public final float attackMs;
+        public final float releaseMs;
+
+        public LimiterConfig(float thresholdDb, float ratio, float attackMs, float releaseMs) {
+            this.thresholdDb = thresholdDb;
+            this.ratio = ratio;
+            this.attackMs = attackMs;
+            this.releaseMs = releaseMs;
+        }
+    }
 
     private static synchronized boolean resolve() {
         if (dpCtor != null) return true;
@@ -63,9 +82,14 @@ public final class AudioEq {
             hasControl = dp.getMethod("hasControl");
             release = dp.getMethod("release");
             try {
+                // Limiter(inUse, enabled, linkGroup, attack, release, ratio, threshold, postGain).
+                // The constructor lookup used to ask for (boolean, int, float x5), which matches
+                // nothing: the lookup threw, the catch swallowed it, and the limiter silently never
+                // ran. The engine then processed audio with AOSP defaults - a -2 dBFS, 10:1, 1 ms
+                // brickwall - on every device, including devices whose EQ writes had failed.
                 Class<?> limiter = Class.forName("android.media.audiofx.DynamicsProcessing$Limiter");
-            limiterCtor = limiter.getConstructor(boolean.class, int.class, float.class,
-                    float.class, float.class, float.class, float.class);
+            limiterCtor = limiter.getConstructor(boolean.class, boolean.class, int.class,
+                    float.class, float.class, float.class, float.class, float.class);
                 setLimiterAll = dp.getMethod("setLimiterAllChannelsTo", limiter);
             } catch (Throwable ignored) {
             }
@@ -98,7 +122,7 @@ public final class AudioEq {
         }
     }
 
-    public synchronized boolean open(int session) {
+    public synchronized boolean open(int session, LimiterConfig limiter) {
         close();
         if (!resolve()) {
             lastError = resolveError;
@@ -108,6 +132,12 @@ public final class AudioEq {
             lastError = "invalid session " + session;
             return false;
         }
+        if (limiter != null) {
+            limiterThreshold = limiter.thresholdDb;
+            limiterRatio = limiter.ratio;
+            limiterAttackMs = limiter.attackMs;
+            limiterReleaseMs = limiter.releaseMs;
+        }
         try {
             effect = dpCtor.newInstance(0, session);
             Object preEq = effect.getClass()
@@ -116,6 +146,13 @@ public final class AudioEq {
             if (!Boolean.TRUE.equals(hasControl.invoke(effect))) {
                 lastError = "no control over session " + session;
                 return false;
+            }
+            // The effect comes up enabled with AOSP default stages. Take it offline until the
+            // curve and limiter land, so a device whose writes will fail never runs the default
+            // -2 dBFS 10:1 brickwall on its own.
+            try {
+                setEnabled.invoke(effect, false);
+            } catch (Throwable ignored) {
             }
             enableLimiter();
             enableBaseCompression();
@@ -148,38 +185,60 @@ public final class AudioEq {
      * {@code gains + spread} and the right gets {@code gains - spread} above 500 Hz. The brain
      * reads that inter-channel difference as width. Low frequencies stay centred: separating
      * bass makes it thin rather than wide.
+     *
+     * @param bandHz active band table: the device pack's or the engine's fallback, not necessarily
+     *               the compiled-in {@link #BAND_HZ}.
      */
     public synchronized boolean apply(float[] gains, float[] spread, int loudnessMillibels,
-                                      boolean enabledStage) {
-        if (effect == null) return false;
+                                      boolean enabledStage, float[] bandHz) {
+        if (effect == null || bandHz == null) return false;
         try {
             int used = Math.min(bandCount, Math.min(BANDS, gains == null ? 0 : gains.length));
             boolean perChannel = setBandByChannel != null;
             for (int i = 0; i < used; i++) {
                 float gain = Math.max(-MAX_DB, Math.min(MAX_DB, gains[i]));
-                // Surplus bands are left untouched: DynamicsProcessing reports them flat by
-                // default, and parking them all on the top band stacked filters we never meant to
-                // add.
-                if (perChannel && widened(spread, i)) {
-                    float delta = Math.max(-8f, Math.min(8f, spread[i]));
-                    float[] pair = channelGains(gain, delta);
-                    // Channel 0 = left, channel 1 = right
-                    setBandByChannel.invoke(effect, 0, i,
-                            bandCtor.newInstance(true, BAND_HZ[i], pair[0]));
-                    try {
-                        setBandByChannel.invoke(effect, 1, i,
-                                bandCtor.newInstance(true, BAND_HZ[i], pair[1]));
-                    } catch (Throwable mono) {
-                        // The session has no second channel. Keep the band by putting it on all
-                        // channels: losing the widening is better than losing the curve, and
-                        // losing the whole write is worse than both.
-                        setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
+                // Catch per band, not per call. A device that rejects one particular frequency
+                // reports "bad parameter value" with no hint which band caused it; recording the
+                // index, centre and value turns that into something an adaptation can act on.
+                try {
+                    // Surplus bands are left untouched: DynamicsProcessing reports them flat by
+                    // default, and parking them all on the top band stacked filters we never
+                    // meant to add.
+                    if (perChannel && widened(spread, i, bandHz)) {
+                        float delta = Math.max(-8f, Math.min(8f, spread[i]));
+                        float[] pair = channelGains(gain, delta);
+                        // Channel 0 = left, channel 1 = right
+                        setBandByChannel.invoke(effect, 0, i,
+                                bandCtor.newInstance(true, bandHz[i], pair[0]));
+                        try {
+                            setBandByChannel.invoke(effect, 1, i,
+                                    bandCtor.newInstance(true, bandHz[i], pair[1]));
+                        } catch (Throwable mono) {
+                            // The session has no second channel. Keep the band by putting it on
+                            // all channels: losing the widening is better than losing the curve,
+                            // and losing the whole write is worse than both.
+                            setBandAll.invoke(effect, i, bandCtor.newInstance(true, bandHz[i], gain));
+                        }
+                    } else {
+                        setBandAll.invoke(effect, i, bandCtor.newInstance(true, bandHz[i], gain));
                     }
-                } else {
-                    setBandAll.invoke(effect, i, bandCtor.newInstance(true, BAND_HZ[i], gain));
+                } catch (Throwable error) {
+                    lastError = "band " + i + " @ " + Math.round(bandHz[i]) + " Hz, gain "
+                            + String.format(java.util.Locale.US, "%.1f", gain) + " dB: "
+                            + describe(error);
+                    // A half-written effect must not keep processing: the limiter from open()
+                    // would be the only stage left alive on the chain.
+                    disableQuietly();
+                    return false;
                 }
             }
-            setEnabled.invoke(effect, enabledStage);
+            try {
+                setEnabled.invoke(effect, enabledStage);
+            } catch (Throwable error) {
+                lastError = "setEnabled(" + enabledStage + "): " + describe(error);
+                return false;
+            }
+
 
             // LoudnessEnhancer: boosts perceived loudness without raising peaks.
             if (loudnessEnhancer != null && leSetTargetGain != null) {
@@ -211,11 +270,25 @@ public final class AudioEq {
      * effect object cannot be built there, but the decision it depends on can.
      */
     static boolean widened(float[] spread, int bandIndex) {
+        return widened(spread, bandIndex, BAND_HZ);
+    }
+
+    /** Same rule against the active band table, which a device pack may have replaced. */
+    static boolean widened(float[] spread, int bandIndex, float[] bandHz) {
         return spread != null
                 && bandIndex >= 0
                 && bandIndex < spread.length
-                && bandIndex < BAND_HZ.length
-                && BAND_HZ[bandIndex] >= WIDEN_FROM_HZ;
+                && bandHz != null
+                && bandIndex < bandHz.length
+                && bandHz[bandIndex] >= WIDEN_FROM_HZ;
+    }
+
+    /** Takes the effect off the chain without throwing: called from failure paths only. */
+    private void disableQuietly() {
+        try {
+            setEnabled.invoke(effect, false);
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Left and right gains for one band, clamped the same way the single-channel path is. */
@@ -266,7 +339,8 @@ public final class AudioEq {
     private void enableLimiter() {
         if (effect == null || limiterCtor == null || setLimiterAll == null) return;
         try {
-            Object limiter = limiterCtor.newInstance(true, 0, 0.005f, 0.06f, 10f, -3f, 0f);
+            Object limiter = limiterCtor.newInstance(true, true, 0, limiterAttackMs,
+                    limiterReleaseMs, limiterRatio, limiterThreshold, 0f);
             setLimiterAll.invoke(effect, limiter);
         } catch (Throwable ignored) {
         }
