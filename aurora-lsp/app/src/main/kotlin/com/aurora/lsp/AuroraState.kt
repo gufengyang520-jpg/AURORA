@@ -74,6 +74,10 @@ class AuroraState(private val context: Context) {
     var precise by mutableStateOf(false)
         private set
 
+    /** A/B: true while the listener is hearing the untouched signal. */
+    var bypass by mutableStateOf(false)
+        private set
+
     /** Gains the engine actually wrote, as reported back through aurora_backend_bands. */
     var actualBands by mutableStateOf<FloatArray?>(null)
         private set
@@ -121,6 +125,7 @@ class AuroraState(private val context: Context) {
         val spreadRaw: String?,
         val loudnessRaw: String?,
         val preciseRaw: String?,
+        val bypassRaw: String?,
         val bandHzRaw: String?,
         val adaptRaw: String?,
         val packRaw: String?,
@@ -158,6 +163,7 @@ class AuroraState(private val context: Context) {
             spreadRaw = read(AuroraEngine.K_SPREAD),
             loudnessRaw = read(AuroraEngine.K_LOUDNESS),
             preciseRaw = read(AuroraEngine.K_PRECISE),
+            bypassRaw = read(AuroraEngine.K_BYPASS),
             bandHzRaw = read(AuroraEngine.R_BANDHZ),
             adaptRaw = read(AuroraEngine.R_ADAPT),
             packRaw = read(AuroraEngine.K_PACK),
@@ -199,6 +205,7 @@ class AuroraState(private val context: Context) {
         spread = (raw.spreadRaw?.toIntOrNull() ?: 0) / 10f
         loudnessDb = ((raw.loudnessRaw?.toIntOrNull() ?: 0) / 100f)
         precise = raw.preciseRaw?.toIntOrNull() == 1
+        bypass = raw.bypassRaw?.toIntOrNull() == 1
         engineBandHz = parseHz(raw.bandHzRaw)
         adapt = raw.adaptRaw.orEmpty().let { if (it == "null") "" else it }
         packName = raw.packRaw
@@ -345,6 +352,23 @@ class AuroraState(private val context: Context) {
         this.loudnessDb = loudnessDb
         this.precise = precise
         refresh()
+    }
+
+    /**
+     * The A/B switch. Written on its own key so it never rewrites the curve, and read back by the
+     * engine within one observer settle because the press has to be audible immediately.
+     *
+     * <p>State is kept here rather than derived from a refresh: the button owns the value it just
+     * wrote, and a refresh landing mid-press would otherwise flash the old state.
+     */
+    suspend fun setBypass(value: Boolean) {
+        bypass = value
+        withContext(Dispatchers.IO) {
+            runRoot(
+                "settings put global " + AuroraEngine.K_BYPASS + " " +
+                        (if (value) 1 else 0)
+            )
+        }
     }
 
     suspend fun selfTest() {

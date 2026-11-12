@@ -77,6 +77,14 @@ public final class AudioEq {
     private String signature = "";
     private boolean applied;
     /**
+     * What the chain currently holds, so the next write can ramp from it instead of cutting.
+     *
+     * <p>Kept here rather than in the engine because apply() is the only thing that knows what
+     * actually landed: the engine's copy is what it asked for, this one is what the DSP took.
+     */
+    private float[] lastGains;
+    private int lastLoudnessMb;
+    /**
      * What this chain really has, one entry per stage: "bands=6 limiter=ok mbc=ok loudness=ok".
      *
      * <p>Every one of those writes used to be a silent catch: a build where the limiter lookup
@@ -453,6 +461,7 @@ public final class AudioEq {
                 try {
                     leSetTargetGain.invoke(loudnessEnhancer, loudnessMillibels);
                     leSetEnabled.invoke(loudnessEnhancer, true);
+                    lastLoudnessMb = loudnessMillibels;
                 } catch (Throwable error) {
                     // Not fatal - the curve is already in - but the UI offers this as a switch,
                     // so a switch that silently does nothing is a lie worth recording.
@@ -460,6 +469,7 @@ public final class AudioEq {
                 }
             }
 
+            lastGains = written;
             return true;
         } catch (Throwable error) {
             lastError = describe(error);
@@ -498,6 +508,7 @@ public final class AudioEq {
     private void forgetApplied() {
         applied = false;
         signature = "";
+        lastGains = null;
     }
 
     private static float clamp(float v) {
@@ -628,6 +639,16 @@ public final class AudioEq {
         return applied;
     }
 
+    /** The curve last written, per band, for the engine's ramp. Null until the first write. */
+    public synchronized float[] lastGains() {
+        return lastGains == null ? null : lastGains.clone();
+    }
+
+    /** Loudness target last written, in millibels. */
+    public synchronized int lastLoudnessMb() {
+        return lastLoudnessMb;
+    }
+
     public synchronized void markApplied(String value) {
         applied = true;
         signature = value;
@@ -651,6 +672,8 @@ public final class AudioEq {
         wantedFrameMs = 0f;
         applied = false;
         signature = "";
+        lastGains = null;
+        lastLoudnessMb = 0;
         // The stages are deliberately kept: close() is how a failed open() cleans up, and wiping
         // them there would delete the very reason the open failed right before the engine reports
         // it. open() clears them instead, so nothing carries over between attempts.

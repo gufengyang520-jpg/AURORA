@@ -36,6 +36,9 @@ internal fun AdvancedSettingsPanel(
     val colors = MiuixTheme.colorScheme
     val spread = rememberDraft(state.spread)
     val loudness = rememberDraft(state.loudnessDb)
+    // Whatever the preset brings is already in force; these sliders are an offset on top of it.
+    val presetSpread = Presets.spreadOf(state.presetIndex)
+    val presetLoudness = Presets.loudnessOf(state.presetIndex)
 
     Column(Modifier.fillMaxWidth()) {
         SliderRow(
@@ -45,6 +48,7 @@ internal fun AdvancedSettingsPanel(
             valueRange = 0f..8f,
             steps = 7,
             label = dbLabel(spread.value),
+            note = presetNote(presetSpread, spread.value),
             onChange = { spread.value = it },
             onCommit = { scope.launch { state.updateAdvanced(spread = spread.value) } }
         )
@@ -56,6 +60,7 @@ internal fun AdvancedSettingsPanel(
             valueRange = 0f..5f,
             steps = 4,
             label = dbLabel(loudness.value),
+            note = presetNote(presetLoudness, loudness.value),
             onChange = { loudness.value = it },
             onCommit = { scope.launch { state.updateAdvanced(loudnessDb = loudness.value) } }
         )
@@ -112,6 +117,7 @@ private fun SliderRow(
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
     label: String,
+    note: String? = null,
     onChange: (Float) -> Unit,
     onCommit: () -> Unit
 ) {
@@ -150,7 +156,25 @@ private fun SliderRow(
             height = 24.dp,
             modifier = Modifier.fillMaxWidth()
         )
+        if (note != null) {
+            Text(note, fontSize = 11.sp, color = colors.onSurfaceVariantSummary)
+        }
     }
+}
+
+/**
+ * Says how much of the total comes from the preset, so a slider reading 0 does not look like the
+ * feature is off when the preset is already supplying it.
+ */
+private fun presetNote(fromPreset: Float, fromSlider: Float): String? {
+    if (fromPreset < 0.05f) return null
+    val total = fromPreset + fromSlider
+    return String.format(
+        Locale.US,
+        "预设自带 %.1f dB，合计 %.1f dB",
+        fromPreset,
+        total
+    )
 }
 
 private fun dbLabel(value: Float): String =

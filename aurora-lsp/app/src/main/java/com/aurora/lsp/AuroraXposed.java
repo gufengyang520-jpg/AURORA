@@ -147,7 +147,10 @@ public final class AuroraXposed implements IXposedHookLoadPackage {
                     // Saved-but-unwatched: moving the spread or loudness slider used to wait for
                     // the next 2 s tick, so the change landed audibly late.
                     AuroraEngine.K_SPREAD, AuroraEngine.K_LOUDNESS, AuroraEngine.K_GEQ_SAVED,
-                    AuroraEngine.K_PACK
+                    AuroraEngine.K_PACK, AuroraEngine.K_PRECISE,
+                    // The A/B switch is finger-driven: it has to land on the same press, not on
+                    // the next scheduled tick.
+                    AuroraEngine.K_BYPASS
             };
             for (String key : keys) {
                 resolver.registerContentObserver(Settings.Global.getUriFor(key), false, observer);

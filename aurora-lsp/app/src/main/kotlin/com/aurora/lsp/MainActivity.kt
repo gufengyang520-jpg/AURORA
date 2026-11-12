@@ -641,8 +641,18 @@ private fun TonePage(
                     state.curve,
                     colors.primary,
                     colors.dividerLine,
-                    showScale = true
+                    showScale = true,
+                    actual = state.actualBands
                 )
+                if (state.actualBands != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "细线是设备实际写进去的曲线，粗线是你选的。两条不重合时，差值就是链路没能做到的部分。",
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = colors.onSurfaceVariantSummary
+                    )
+                }
             }
         }
 
@@ -692,9 +702,60 @@ private fun TonePage(
             )
         }
 
+        AuroraGroup("对比") {
+            AbCompareRow(state = state, scope = scope)
+        }
+
         AuroraGroup("声场与响度") {
             AdvancedSettingsPanel(state = state, scope = scope)
         }
+    }
+}
+
+/**
+ * Hold to hear the untouched signal, release to hear AURORA again.
+ *
+ * <p>A tap-to-toggle was the obvious shape and the wrong one: toggling leaves the chain off until
+ * the user remembers to toggle back, and comparing two things a minute apart compares nothing. The
+ * only useful comparison happens while a phrase is still playing, so the press has to be the whole
+ * gesture.
+ */
+@Composable
+private fun AbCompareRow(state: AuroraState, scope: kotlinx.coroutines.CoroutineScope) {
+    val colors = MiuixTheme.colorScheme
+    val pressed = state.bypass
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        scope.launch { state.setBypass(true) }
+                        tryAwaitRelease()
+                        scope.launch { state.setBypass(false) }
+                    }
+                )
+            }
+            .padding(horizontal = Space.card, vertical = Space.rowV),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("A/B 对比", fontSize = 15.sp, color = colors.onSurface)
+            Text(
+                if (pressed) "正在听原声，松手回到 AURORA。"
+                else "按住听原声，松开回到 AURORA。切换预设时用来确认到底改了哪里。",
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                color = if (pressed) colors.primary else colors.onSurfaceVariantSummary
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            if (pressed) "原声" else "按住",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (pressed) colors.primary else colors.onSurfaceVariantSummary
+        )
     }
 }
 
@@ -722,11 +783,21 @@ internal fun CurvePreview(
     curve: FloatArray,
     accent: Color,
     grid: Color,
-    showScale: Boolean = false
+    showScale: Boolean = false,
+    /**
+     * What the DSP actually holds, drawn behind the target.
+     *
+     * <p>The two differ whenever the chain clipped, fell back to the legacy band table, or refused
+     * the write - and that gap used to be invisible: the chart showed the curve the app wanted, so
+     * a device whose effect had silently failed still looked tuned.
+     */
+    actual: FloatArray? = null
 ) {
     // Animated, so switching a preset shows the curve moving to its new shape instead of the line
     // teleporting. Six bands, six springs, one gesture.
     val live = rememberAnimatedBands(curve)
+    val liveActual = if (actual == null || actual.size != curve.size) null
+    else rememberAnimatedBands(actual)
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
@@ -759,6 +830,23 @@ internal fun CurvePreview(
                 start = Offset(x, inset),
                 end = Offset(x, h - inset),
                 strokeWidth = 0.8f
+            )
+        }
+
+        // The written curve first, thinner and de-emphasised, so the target stays the subject of
+        // the chart and the actual reads as its shadow.
+        if (liveActual != null) {
+            val actualPath = Path().apply {
+                val first = Offset(0f, mid - (liveActual[0] / 12f) * usable)
+                moveTo(first.x, first.y)
+                for (index in 1 until liveActual.size) {
+                    lineTo(step * index, mid - (liveActual[index] / 12f) * usable)
+                }
+            }
+            drawPath(
+                actualPath,
+                grid.copy(alpha = 0.9f),
+                style = Stroke(width = 1.6f, cap = StrokeCap.Round)
             )
         }
 

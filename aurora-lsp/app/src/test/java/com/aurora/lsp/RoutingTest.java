@@ -84,6 +84,71 @@ public class RoutingTest {
     }
 
     @Test
+    public void everyHeadphoneShapeIsTreatedAsHeadphones() {
+        // LE Audio earbuds, an aid and a USB-C dongle all used to fall through to the speaker
+        // branch: full widening, full lift, no bass trim. On an in-ear that is phasey and boomy.
+        int[] isolated = {
+                android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+                android.media.AudioDeviceInfo.TYPE_USB_DEVICE,
+                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+                android.media.AudioDeviceInfo.TYPE_HEARING_AID,
+                android.media.AudioDeviceInfo.TYPE_BLE_HEARING_AID,
+        };
+        AuroraEngine.Config c = config();
+        c.spread = 5f;
+        for (int type : isolated) {
+            AuroraEngine.SessionInfo info = route(type);
+            assertTrue("type " + type + " must count as isolated channels",
+                    AuroraEngine.isolatedChannels(type));
+            assertEquals("type " + type + " gets 60% widening",
+                    3f, AuroraEngine.buildSpread(c, info)[5], 0.01f);
+        }
+    }
+
+    @Test
+    public void aCallIsNotMusic() {
+        // USAGE_VOICE_COMMUNICATION is the call downlink; the signalling usage carries the in-call
+        // bleeps on its own session. Both must stay out of the chain.
+        assertTrue(AuroraEngine.isCallUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION));
+        assertTrue(AuroraEngine.isCallUsage(
+                android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING));
+        assertTrue("media must still be processed",
+                !AuroraEngine.isCallUsage(android.media.AudioAttributes.USAGE_MEDIA));
+        assertTrue("the recorder announcement is media-shaped",
+                !AuroraEngine.isCallUsage(android.media.AudioAttributes.USAGE_GAME));
+        assertTrue("an unknown usage must not be dropped",
+                !AuroraEngine.isCallUsage(-1));
+    }
+
+    @Test
+    public void aSpeakerIsNotMistakenForAHeadphone() {
+        int[] speakers = {
+                -1,
+                android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+                android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
+                android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                android.media.AudioDeviceInfo.TYPE_HDMI,
+        };
+        for (int type : speakers) {
+            assertTrue("type " + type + " must keep the speaker tuning",
+                    !AuroraEngine.isolatedChannels(type));
+        }
+    }
+
+    @Test
+    public void leAudioEarbudsAlsoGetTheBassTrim() {
+        AuroraEngine.Config c = config();
+        c.userCurve = new float[AudioEq.BANDS];
+        float speaker80 = AuroraEngine.buildGains(c, new AuroraEngine.SessionInfo(1, -1, -1, null), 100)[0];
+        float ble80 = AuroraEngine.buildGains(c, route(android.media.AudioDeviceInfo.TYPE_BLE_HEADSET), 100)[0];
+        assertEquals("LE Audio keeps the same trim as A2DP", speaker80 - 2f, ble80, 0.01f);
+    }
+
+    @Test
     public void aHeadphoneMayUseMoreAtTwoHundred() {
         AuroraEngine.Config c = config();
         c.userCurve = new float[]{0f, 8f, 0f, 0f, 0f, 0f};

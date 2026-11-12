@@ -47,6 +47,14 @@ public final class AuroraEngine {
      * contour unless the listener asked for it.
      */
     public static final String K_PRECISE = "aurora_precise";
+    /**
+     * A/B: while this is 1 the chain is released and the session plays untouched.
+     *
+     * <p>The point of a comparison is the switch, not the settings page: holding this down has to
+     * give the original within a frame or two, so the ear compares the same phrase rather than two
+     * different moments of the track.
+     */
+    public static final String K_BYPASS = "aurora_bypass";
     /** Per-device adaptation written by the app after fetching the matching device pack. */
     public static final String K_PACK = "aurora_device_pack";
 
@@ -81,6 +89,23 @@ public final class AuroraEngine {
     private static final float[] LOUDNESS_SHAPE = {1.0f, 0.5f, 0f, -0.1f, 0.3f, 0.6f};
     private static final float MAX_LOUDNESS_BOOST_DB = 4f;
 
+    /** Ceiling for the LoudnessEnhancer stage, matching the 0-5 dB range the slider exposes. */
+    static final int MAX_LOUDNESS_MB = 500;
+    /** Ceiling for stereo widening, matching the 0-8 dB range the slider exposes. */
+    static final float MAX_SPREAD_DB = 8f;
+
+    /**
+     * Preset changes are ramped, not cut.
+     *
+     * <p>The chain latches on every write, so switching from {@code night} to {@code punch} in one
+     * step is a hard discontinuity in the middle of whatever is playing - audible as a click even
+     * when the two curves are only a few dB apart. Four short frames make it a slide.
+     */
+    private static final int FADE_STEPS = 4;
+    private static final long FADE_STEP_MS = 40L;
+    /** Below this the ramp is not worth the extra writes. */
+    private static final float FADE_MIN_DELTA_DB = 0.6f;
+
     /**
      * Per-band ceiling. 80 Hz and 10 kHz are the widest; 200 Hz stays low because pushing the
      * muddy range makes everything sound thick. 500 Hz has headroom but is rarely needed.
@@ -108,6 +133,8 @@ public final class AuroraEngine {
     private final Context context;
     private final Map<Integer, AudioEq> effects = new HashMap<>();
     private final Map<Integer, Long> lastSeen = new HashMap<>();
+    /** Sessions the last scan saw carrying call audio; their effects are dropped at once. */
+    private final Set<Integer> voiceSessions = new HashSet<>();
     private final java.util.ArrayDeque<String> recent = new java.util.ArrayDeque<>();
     private final java.text.SimpleDateFormat clock =
             new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US);
@@ -183,6 +210,14 @@ public final class AuroraEngine {
 
     public void tick() {
         Config config = read();
+        // Bypass sits before everything else: it is the A/B switch, and while it is held the chain
+        // has to be gone, not merely flat - a flat curve still goes through the DSP and keeps its
+        // latency and its limiter, which is exactly what the listener is trying to hear past.
+        if (config.bypass) {
+            releaseAll();
+            report("bypass", "A/B 对比中：已听原声，松开即恢复。", null, 0);
+            return;
+        }
         if (config.panic) {
             releaseAll();
             report("panic", "已通过 aurora_panic 停机，均衡器全部释放。", null, 0);
@@ -194,9 +229,22 @@ public final class AuroraEngine {
             return;
         }
         Map<Integer, SessionInfo> sessions = activeSessions();
+        // A call that starts while music is playing ends the music session, but not before the
+        // next scan: drop the effect the moment the route has been claimed by a call instead of
+        // waiting out the ten-second stale timeout. The limiter is the reason - on a call it
+        // squeezes the downlink, and being late to release is audible.
+        for (Integer session : voiceSessions) {
+            lastSeen.remove(session);
+            AudioEq eq = effects.remove(session);
+            if (eq != null) eq.close();
+        }
         if (sessions.isEmpty()) {
             releaseStale(android.os.SystemClock.elapsedRealtime());
-            report("idle", "当前没有正在播放的会话，等待播放开始。", null, 0);
+            // Say why the display is empty during a call, instead of leaving the user to wonder
+            // whether the module died halfway through it.
+            report("idle", voiceSessions.isEmpty()
+                    ? "当前没有正在播放的会话，等待播放开始。"
+                    : "通话中，AURORA 不介入通话音频；音乐一恢复就会重新挂上。", null, 0);
             return;
         }
 
@@ -224,10 +272,15 @@ public final class AuroraEngine {
             // this same tick is already in force for the later ones.
             float[] table = fallbackEngaged ? FALLBACK_HZ : activeTable(config);
             float[] spread = buildSpread(config, info);
+            // Resolved once per session: the preset in force contributes its own width and lift,
+            // and the user's sliders sit on top of that rather than replacing it.
+            float spreadTotal = totalSpread(config, info);
+            int loudnessMb = totalLoudnessMb(config, info);
             int bands = config.preEqBands();
             float[] writeGains = AudioEq.expandGains(gains, table, bands);
             float[] writeSpread = spread == null ? null : AudioEq.expandGains(spread, table, bands);
-            String desired = desiredSignature(writeGains, config, table, bands);
+            float[] writeTable = AudioEq.expandTable(table, bands);
+            String desired = desiredSignature(writeGains, spreadTotal, loudnessMb, table, bands);
             lastGains = gains;
 
             AudioEq eq = effects.get(session);
@@ -270,21 +323,19 @@ public final class AuroraEngine {
                 applied++;
                 continue;
             }
-            if (!eq.apply(writeGains, writeSpread, config.loudnessMb, true,
-                    AudioEq.expandTable(table, bands))) {
+            if (!write(eq, writeGains, writeSpread, loudnessMb, writeTable, testing)) {
                 // The primary table was rejected: a device whose DSP does not accept the 80 Hz
                 // or 10 kHz endpoints still gets a curve, on the table that predates them.
+                float[] legacyGains = AudioEq.expandGains(gains, FALLBACK_HZ, bands);
+                float[] legacySpread = spread == null ? null
+                        : AudioEq.expandGains(spread, FALLBACK_HZ, bands);
+                float[] legacyTable = AudioEq.expandTable(FALLBACK_HZ, bands);
                 if (!fallbackEngaged && !sameTable(table, FALLBACK_HZ)
-                        && eq.apply(AudioEq.expandGains(gains, FALLBACK_HZ, bands),
-                                spread == null ? null
-                                        : AudioEq.expandGains(spread, FALLBACK_HZ, bands),
-                                config.loudnessMb, true,
-                                AudioEq.expandTable(FALLBACK_HZ, bands))) {
+                        && write(eq, legacyGains, legacySpread, loudnessMb, legacyTable, testing)) {
                     fallbackEngaged = true;
                     fellBackThisTick = true;
-                    eq.markApplied(desiredSignature(
-                            AudioEq.expandGains(gains, FALLBACK_HZ, bands),
-                            config, FALLBACK_HZ, bands));
+                    eq.markApplied(desiredSignature(legacyGains, spreadTotal, loudnessMb,
+                            FALLBACK_HZ, bands));
                     applied++;
                     continue;
                 }
@@ -313,6 +364,59 @@ public final class AuroraEngine {
                 tableFor(config), adaptString(config), stages);
     }
 
+    /**
+     * Writes one frame, ramping there first when the chain already holds a noticeably different one.
+     *
+     * <p>Only a chain that is already applied and was written by this engine is ramped: a fresh
+     * open() starts from flat, and sliding up from flat in four steps is four writes the user paid
+     * for with nothing gained - the track has not started yet.
+     *
+     * <p>The ramp is skipped for the self test, which is meant to be an immediate drop to silence
+     * so the listener can tell whether the chain is live at all.
+     */
+    private boolean write(AudioEq eq, float[] gains, float[] spread, int loudnessMb,
+                          float[] bandHz, boolean testing) {
+        if (!testing && eq.isApplied()) {
+            float[] live = eq.lastGains();
+            if (live != null && live.length == gains.length) {
+                float worst = 0f;
+                for (int i = 0; i < gains.length; i++) {
+                    worst = Math.max(worst, Math.abs(gains[i] - live[i]));
+                }
+                if (worst > FADE_MIN_DELTA_DB) {
+                    // Loudness follows the ramp too: jumping the enhancer while the curve slides
+                    // is the same discontinuity, just on a different stage.
+                    int fromMb = eq.lastLoudnessMb();
+                    for (int step = 1; step < FADE_STEPS; step++) {
+                        float t = step / (float) FADE_STEPS;
+                        float[] between = new float[gains.length];
+                        for (int i = 0; i < gains.length; i++) {
+                            between[i] = live[i] + (gains[i] - live[i]) * t;
+                        }
+                        if (!eq.apply(between, spread, Math.round(fromMb + (loudnessMb - fromMb) * t),
+                                true, bandHz)) {
+                            // A frame the chain rejected: stop ramping and let the final write
+                            // below decide the outcome, so one bad step cannot leave the curve
+                            // parked halfway.
+                            break;
+                        }
+                        sleepQuietly(FADE_STEP_MS);
+                    }
+                }
+            }
+        }
+        return eq.apply(gains, spread, loudnessMb, true, bandHz);
+    }
+
+    /** The engine thread is a private HandlerThread, so blocking it briefly costs only this tick. */
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private float[] activeTable(Config config) {
         return config.bandHz != null ? config.bandHz : AudioEq.BAND_HZ;
     }
@@ -335,8 +439,12 @@ public final class AuroraEngine {
      * the write, and after leaving precise mode the six-band curve and the ten-band curve can
      * round to the same values - skipping then leaves the old chain in place with the old shape.
      */
-    private static String desiredSignature(float[] gains, Config config, float[] table, int bands) {
-        return signature(gains) + "s" + config.spread + "l" + config.loudnessMb
+    private static String desiredSignature(float[] gains, float spread, int loudnessMb,
+                                           float[] table, int bands) {
+        // Spread and loudness are the resolved totals, not the raw sliders: the presets now carry
+        // their own width and lift, and a signature built from the sliders alone would let a
+        // preset switch with untouched sliders round to the same string and skip the write.
+        return signature(gains) + "s" + spread + "l" + loudnessMb
                 + "t" + tableTag(table) + "n" + bands;
     }
 
@@ -365,27 +473,87 @@ public final class AuroraEngine {
      * rather than left to sound phasey.
      */
     static float[] buildSpread(Config config, SessionInfo info) {
-        if (config.spread <= 0) return null;
+        float total = totalSpread(config, info);
+        if (total <= 0f) return null;
         // Non-uniform: the ear localises high frequencies by inter-aural level difference, so
         // the top band gets the full amount, 4k gets most of it, 1.5k gets half. Bass stays
         // centred - separating it makes the low end thin, not wide.
-        float amount = config.spread * routeSpreadScale(info);
+        float amount = total * routeSpreadScale(info);
         return new float[]{0f, 0f, 0f, amount * 0.5f, amount * 0.8f, amount};
     }
 
-    /** How much of the full widening a route tolerates. Isolated channels get less. */
-    private static float routeSpreadScale(SessionInfo info) {
-        int type = info == null ? -1 : info.deviceType;
+    /**
+     * Which preset the curve in force came from, or -1 when it is hand-drawn.
+     *
+     * <p>The presets now carry their own width and loudness, so the answer here decides more than
+     * the shape: it also says which stage settings belong with it. Kept in the same order as
+     * {@link #resolveCurve} so the two can never disagree about what is playing.
+     */
+    static int curvePresetIndex(Config config, SessionInfo info) {
+        String assigned = info == null || info.packageName == null
+                ? null
+                : config.appMap.get(info.packageName);
+        if (assigned != null) {
+            if (config.userPresets.containsKey(assigned)) return -1;
+            if (Presets.isBuiltIn(assigned)) return Presets.indexOf(assigned);
+        }
+        if (config.userCurve != null) return -1;
+        String key = config.preset == null ? "flat" : config.preset;
+        if ("custom".equals(key)) return -1;
+        return Presets.indexOf(key);
+    }
+
+    /** Slider plus whatever the preset itself asks for, capped at the range the slider offers. */
+    static float totalSpread(Config config, SessionInfo info) {
+        int index = curvePresetIndex(config, info);
+        float preset = index < 0 ? 0f : Presets.spreadOf(index);
+        return clamp(config.spread + preset, 0f, MAX_SPREAD_DB);
+    }
+
+    /**
+     * Slider plus the preset's own lift, in millibels.
+     *
+     * <p>A preset that always sounds thin at low volume (night) and one that should stay forward
+     * (punch) were identical here before: the control was global, so every preset shared a stage
+     * and a level. Same cap as the slider, so the switch cannot be used to raise peaks.
+     */
+    static int totalLoudnessMb(Config config, SessionInfo info) {
+        int index = curvePresetIndex(config, info);
+        float preset = index < 0 ? 0f : Presets.loudnessOf(index);
+        int mb = Math.round(config.loudnessMb + preset * 100f);
+        return Math.max(0, Math.min(MAX_LOUDNESS_MB, mb));
+    }
+
+    /**
+     * True when the two channels arrive separately: headphones, earbuds, aids, USB and Bluetooth.
+     *
+     * <p>This used to be five switch statements that each listed the same five types, which is
+     * how LE Audio earbuds ({@code TYPE_BLE_HEADSET}), hearing aids and USB-C dongles
+     * ({@code TYPE_USB_DEVICE}) ended up classified as a phone speaker: full widening, full
+     * low-volume lift, no bass trim. On an in-ear that reads as phasey and boomy, which is
+     * exactly what these trims exist to prevent. One list, so a route cannot be added to the
+     * widening but forgotten in the ceiling.
+     */
+    static boolean isolatedChannels(int type) {
         switch (type) {
             case android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
             case android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET:
             case android.media.AudioDeviceInfo.TYPE_USB_HEADSET:
+            case android.media.AudioDeviceInfo.TYPE_USB_DEVICE:
             case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
             case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-                return 0.6f;
+            case android.media.AudioDeviceInfo.TYPE_BLE_HEADSET:
+            case android.media.AudioDeviceInfo.TYPE_HEARING_AID:
+            case android.media.AudioDeviceInfo.TYPE_BLE_HEARING_AID:
+                return true;
             default:
-                return 1f;
+                return false;
         }
+    }
+
+    /** How much of the full widening a route tolerates. Isolated channels get less. */
+    private static float routeSpreadScale(SessionInfo info) {
+        return isolatedChannels(info == null ? -1 : info.deviceType) ? 0.6f : 1f;
     }
 
     private void releaseStale(long now) {
@@ -403,6 +571,7 @@ public final class AuroraEngine {
     }
 
     private Map<Integer, SessionInfo> activeSessions() {
+        voiceSessions.clear();
         Map<Integer, SessionInfo> result = new HashMap<>();
         if (!reflect()) return result;
         try {
@@ -415,13 +584,47 @@ public final class AuroraEngine {
                 if (session <= 0 || session > 1_000_000) continue;
                 if (state != 2) continue;
                 int uid = uidOf(config);
-                result.put(session, new SessionInfo(session, uid, deviceTypeOf(config), packageOf(uid)));
+                int usage = usageOf(config);
+                // A phone call is not music. The downlink voice is played by the telephony stack
+                // with USAGE_VOICE_COMMUNICATION over SCO at 8 kHz, so nothing above 4 kHz can
+                // even arrive, and the DSP's limiter and latency sit in the one path where a
+                // clipped syllable is worse than a flat one. Left alone.
+                if (isCallUsage(usage)) {
+                    voiceSessions.add(session);
+                    continue;
+                }
+                result.put(session, new SessionInfo(session, uid, deviceTypeOf(config), packageOf(uid), usage));
             }
         } catch (Throwable error) {
             lastError = AudioEq.describe(error);
             Log.w(TAG, "session scan failed: " + lastError);
         }
         return result;
+    }
+
+    /**
+     * Whether this usage is a phone call rather than something worth equalising.
+     *
+     * <p>Split out so the rule can be tested on a plain JVM: the scan needs {@code system_server}
+     * and reflection, the decision does not. Signalling is included with the call itself - the
+     * in-call bleeps use a separate session, and leaving it armed would put the dark curve and
+     * the limiter back on the one path the exclusion exists to keep clean.
+     */
+    static boolean isCallUsage(int usage) {
+        return usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
+                || usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING;
+    }
+
+    /** The stream the app declared, or -1 when the platform did not say. */
+    private int usageOf(Object config) {
+        try {
+            Object attrs = config.getClass().getMethod("getAudioAttributes").invoke(config);
+            if (attrs instanceof android.media.AudioAttributes) {
+                return ((android.media.AudioAttributes) attrs).getUsage();
+            }
+        } catch (Throwable ignored) {
+        }
+        return -1;
     }
 
     private int uidOf(Object config) {
@@ -574,17 +777,7 @@ public final class AuroraEngine {
 
     /** Speaker-tuned lift, kept whole only where the driver is the reason for it. */
     private static float routeLoudnessScale(SessionInfo info) {
-        int type = info == null ? -1 : info.deviceType;
-        switch (type) {
-            case android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-            case android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET:
-            case android.media.AudioDeviceInfo.TYPE_USB_HEADSET:
-            case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
-            case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-                return 0.6f;
-            default:
-                return 1f;
-        }
+        return isolatedChannels(info == null ? -1 : info.deviceType) ? 0.6f : 1f;
     }
 
     private static float capForBand(Config config, SessionInfo info, int index) {
@@ -600,19 +793,18 @@ public final class AuroraEngine {
      * not bind even if they were raised.
      */
     private static float[] capsForRoute(SessionInfo info) {
-        int type = info == null ? -1 : info.deviceType;
-        switch (type) {
-            case android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-            case android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET:
-            case android.media.AudioDeviceInfo.TYPE_USB_HEADSET:
-            case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
-            case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
-                return HEADPHONE_BOOST_BY_BAND;
-            default:
-                return MAX_BOOST_BY_BAND;
-        }
+        return isolatedChannels(info == null ? -1 : info.deviceType)
+                ? HEADPHONE_BOOST_BY_BAND
+                : MAX_BOOST_BY_BAND;
     }
 
+    /**
+     * Pulls the bass back a little on the routes that deliver it themselves.
+     *
+     * <p>Wired gets the deeper trim: the seal is reliable, so 80 Hz arrives whether or not the
+     * curve asks for it. Bluetooth gets less because the codec already shaves the bottom octave
+     * off — LE Audio included, which used to get no trim at all.
+     */
     private static void applyRouteTrim(float[] gains, SessionInfo info) {
         int type = info == null ? -1 : info.deviceType;
         switch (type) {
@@ -622,8 +814,14 @@ public final class AuroraEngine {
                 gains[0] -= 3f;
                 gains[1] -= 1f;
                 break;
+            case android.media.AudioDeviceInfo.TYPE_USB_DEVICE:
             case android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
+            case android.media.AudioDeviceInfo.TYPE_BLE_HEADSET:
+            case android.media.AudioDeviceInfo.TYPE_HEARING_AID:
+            case android.media.AudioDeviceInfo.TYPE_BLE_HEARING_AID:
                 gains[0] -= 2f;
+                break;
+            default:
                 break;
         }
     }
@@ -719,6 +917,7 @@ public final class AuroraEngine {
             config.spread = clamp(Settings.Global.getInt(resolver, K_SPREAD, 0), 0, 80) / 10f;
             config.loudnessMb = clamp(Settings.Global.getInt(resolver, K_LOUDNESS, 0), 0, 500);
             config.precise = Settings.Global.getInt(resolver, K_PRECISE, 0) == 1;
+            config.bypass = Settings.Global.getInt(resolver, K_BYPASS, 0) == 1;
             parsePack(config, Settings.Global.getString(resolver, K_PACK));
             // An unknown key still resolves to the flat curve - that is the safe value - but it
             // used to do so silently, which looks exactly like "the module does nothing". Say it
@@ -757,6 +956,10 @@ public final class AuroraEngine {
     }
 
     private static int clamp(int value, int low, int high) {
+        return Math.max(low, Math.min(high, value));
+    }
+
+    private static float clamp(float value, float low, float high) {
         return Math.max(low, Math.min(high, value));
     }
 
@@ -939,6 +1142,8 @@ public final class AuroraEngine {
          * rebuild the effect - a band count cannot be altered on a live chain.
          */
         boolean precise;
+        /** A/B switch: the chain is released while this is set. */
+        boolean bypass;
 
         int preEqBands() {
             return precise ? AudioEq.PRECISE_BANDS : AudioEq.DEFAULT_BANDS;
@@ -954,12 +1159,19 @@ public final class AuroraEngine {
         final int uid;
         final int deviceType;
         final String packageName;
+        /** {@code AudioAttributes.USAGE_*}, or -1 when the platform did not say. */
+        final int usage;
 
         SessionInfo(int session, int uid, int deviceType, String packageName) {
+            this(session, uid, deviceType, packageName, -1);
+        }
+
+        SessionInfo(int session, int uid, int deviceType, String packageName, int usage) {
             this.session = session;
             this.uid = uid;
             this.deviceType = deviceType;
             this.packageName = packageName;
+            this.usage = usage;
         }
     }
 }
