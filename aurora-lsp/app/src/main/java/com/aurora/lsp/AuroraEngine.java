@@ -103,6 +103,16 @@ public final class AuroraEngine {
      */
     private static final int FADE_STEPS = 4;
     private static final long FADE_STEP_MS = 40L;
+    /**
+     * Ramp used when a chain is opened under a track that is already playing.
+     *
+     * <p>Four steps of 40 ms are fine between two curves - the signal is continuous, only its
+     * shape changes. Going from flat to a whole curve is a bigger step, and it lands on a session
+     * that has just taken over playback, so it gets more, shorter frames: 6 x 20 ms keeps every
+     * individual step under about 1.5 dB.
+     */
+    private static final int OPEN_FADE_STEPS = 6;
+    private static final long OPEN_FADE_STEP_MS = 20L;
     /** Below this the ramp is not worth the extra writes. */
     private static final float FADE_MIN_DELTA_DB = 0.6f;
 
@@ -120,7 +130,15 @@ public final class AuroraEngine {
      * defaults are what actually lands now; device packs override them per model.
      */
     static final AudioEq.LimiterConfig DEFAULT_LIMITER =
-            new AudioEq.LimiterConfig(-6f, 6f, 5f, 80f);
+            new AudioEq.LimiterConfig(-6f, 4f, 5f, 80f);
+
+    /*
+     * Why 4:1 and not 6:1. The preamp already holds the loudest band at +6 dB, so the limiter's
+     * job here is to catch peaks, not to level the mix. At 6:1 every kick and every bass note that
+     * crossed the threshold lost most of its attack, which is heard as a flat, tired low end and
+     * as the gain envelope moving under sustained bass. 4:1 still lands 12 dB over threshold at
+     * -3 dBFS, so the speaker is no less protected; it just sounds less squashed on the way there.
+     */
 
     /**
      * Known-good band table for devices whose DSP rejects the 80 Hz / 10 kHz endpoints. AOSP's own
@@ -365,47 +383,81 @@ public final class AuroraEngine {
     }
 
     /**
-     * Writes one frame, ramping there first when the chain already holds a noticeably different one.
+     * Writes one frame, ramping there first when the chain does not already hold it.
      *
-     * <p>Only a chain that is already applied and was written by this engine is ramped: a fresh
-     * open() starts from flat, and sliding up from flat in four steps is four writes the user paid
-     * for with nothing gained - the track has not started yet.
+     * <p>Two different discontinuities, two different ramps. A chain that is already applied is
+     * slid from its live curve to the new one in four frames. A chain that was just opened is slid
+     * up from flat in six shorter ones, because the assumption this used to be written on - "a
+     * fresh open() starts from flat, the track has not started yet" - is only true when AURORA
+     * opens the session first. When someone switches apps mid-playback, the session is already
+     * running and the new chain takes over a signal that is in the middle of a word: enabling the
+     * effect and jumping to a whole curve in one write is exactly the "pop on app switch" report.
      *
      * <p>The ramp is skipped for the self test, which is meant to be an immediate drop to silence
      * so the listener can tell whether the chain is live at all.
      */
     private boolean write(AudioEq eq, float[] gains, float[] spread, int loudnessMb,
                           float[] bandHz, boolean testing) {
-        if (!testing && eq.isApplied()) {
-            float[] live = eq.lastGains();
-            if (live != null && live.length == gains.length) {
-                float worst = 0f;
+        if (testing) return eq.apply(gains, spread, loudnessMb, true, bandHz);
+        float[] live = eq.isApplied() ? eq.lastGains() : null;
+        if (live == null || live.length != gains.length) {
+            // Opened a moment ago, or the last write failed and forgot what it had landed. Neither
+            // case has a curve to slide from, so slide from silence instead of cutting in.
+            return rampFromFlat(eq, gains, spread, loudnessMb, bandHz);
+        }
+        float worst = 0f;
+        for (int i = 0; i < gains.length; i++) {
+            worst = Math.max(worst, Math.abs(gains[i] - live[i]));
+        }
+        if (worst > FADE_MIN_DELTA_DB) {
+            // Loudness follows the ramp too: jumping the enhancer while the curve slides is the
+            // same discontinuity, just on a different stage.
+            int fromMb = eq.lastLoudnessMb();
+            for (int step = 1; step < FADE_STEPS; step++) {
+                float t = step / (float) FADE_STEPS;
+                float[] between = new float[gains.length];
                 for (int i = 0; i < gains.length; i++) {
-                    worst = Math.max(worst, Math.abs(gains[i] - live[i]));
+                    between[i] = live[i] + (gains[i] - live[i]) * t;
                 }
-                if (worst > FADE_MIN_DELTA_DB) {
-                    // Loudness follows the ramp too: jumping the enhancer while the curve slides
-                    // is the same discontinuity, just on a different stage.
-                    int fromMb = eq.lastLoudnessMb();
-                    for (int step = 1; step < FADE_STEPS; step++) {
-                        float t = step / (float) FADE_STEPS;
-                        float[] between = new float[gains.length];
-                        for (int i = 0; i < gains.length; i++) {
-                            between[i] = live[i] + (gains[i] - live[i]) * t;
-                        }
-                        if (!eq.apply(between, spread, Math.round(fromMb + (loudnessMb - fromMb) * t),
-                                true, bandHz)) {
-                            // A frame the chain rejected: stop ramping and let the final write
-                            // below decide the outcome, so one bad step cannot leave the curve
-                            // parked halfway.
-                            break;
-                        }
-                        sleepQuietly(FADE_STEP_MS);
-                    }
+                if (!eq.apply(between, spread, Math.round(fromMb + (loudnessMb - fromMb) * t),
+                        true, bandHz)) {
+                    // A frame the chain rejected: stop ramping and let the final write below
+                    // decide the outcome, so one bad step cannot leave the curve parked halfway.
+                    break;
                 }
+                sleepQuietly(FADE_STEP_MS);
             }
         }
         return eq.apply(gains, spread, loudnessMb, true, bandHz);
+    }
+
+    /**
+     * Fades a freshly opened chain in from flat, one short frame at a time.
+     *
+     * <p>Each frame is a real write, so the DSP re-latches and the effect re-enables with the new
+     * coefficients rather than being switched on under a signal it has never seen. If any frame is
+     * rejected the whole write fails and the caller decides - half a ramp is a half-curve, which
+     * is a state the user would hear and could not explain.
+     */
+    private boolean rampFromFlat(AudioEq eq, float[] gains, float[] spread, int loudnessMb,
+                                 float[] bandHz) {
+        // Step 0 is a flat frame on purpose: it is what switches the effect on, so the chain is
+        // already running before the first dB of curve is asked of it.
+        for (int step = 0; step < OPEN_FADE_STEPS; step++) {
+            float t = step / (float) OPEN_FADE_STEPS;
+            if (!eq.apply(fadeStep(gains, t), spread, Math.round(loudnessMb * t), true, bandHz)) {
+                return false;
+            }
+            sleepQuietly(OPEN_FADE_STEP_MS);
+        }
+        return eq.apply(gains, spread, loudnessMb, true, bandHz);
+    }
+
+    /** One frame of the opening fade: the target curve scaled down, never a different shape. */
+    static float[] fadeStep(float[] gains, float fraction) {
+        float[] out = new float[gains.length];
+        for (int i = 0; i < gains.length; i++) out[i] = gains[i] * fraction;
+        return out;
     }
 
     /** The engine thread is a private HandlerThread, so blocking it briefly costs only this tick. */

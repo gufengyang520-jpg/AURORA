@@ -1,8 +1,9 @@
 # 音频模块（AURORA）· CONTEXT
 
-一句话摘要：这是一个用 LSPosed 注入 system_server、按**正在播放的音频会话**逐个挂载 DynamicsProcessing 软件均衡器、在音轨末端叠加六段曲线（80/200/500/1.5k/4k/10k Hz）的 Android 调音模块；当前版本 **1.3.3**（versionCode 1303），仓库 shisjsji/AURORA。
+一句话摘要：这是一个用 LSPosed 注入 system_server、按**正在播放的音频会话**逐个挂载 DynamicsProcessing 软件均衡器、在音轨末端叠加六段曲线（80/200/500/1.5k/4k/10k Hz）的 Android 调音模块；当前版本 **1.4.1**（versionCode 1401），仓库 shisjsji/AURORA。
 
 > **本文件已于 2026-11-06 按 1.2.0 重写。** 旧版描述的「Dolby DAX3 `dap_hw` + 20 段 GEQ + AudioEffect 厂商参数通道」路线**已整体废弃**，对应代码 `DolbyDap.java` 已删除。若在别处读到 v1.5.0、20 段、`aurora_geq` 之外还带 profile 的说法，一律以本文件为准。
+> **1.4.1 变更**：修「切应用瞬间爆响」——旧淡入只对已写入过的链生效，新开的链在会话已放音时一帧内既写满曲线又 `setEnabled(true)`；现在新链从全平直起步、6 帧 × 20 ms 爬升（`OPEN_FADE_STEPS`/`OPEN_FADE_STEP_MS`/`rampFromFlat()`/`fadeStep()`）。MBC 从「只写 band 0」改为六段整表（旧值把 0.02/0.25 **秒**写进了毫秒字段），limiter 由 6:1 放宽到 4:1。版本 1401 / 1.4.1。
 > **1.3.3 变更**：引擎改为自己描述处理链架构——通过反射 `DynamicsProcessing.Config.Builder` 把 pre-EQ 段数从平台默认 6 提到 10（精确模式再配 20 ms 帧，FFT 512→1024 点，bin 93.75→46.9 Hz），并在开启时重建效果器；6 段设置语义完全不变，引擎内部把 6 段曲线按对数频率插值扩到 N 段。按路由分参数：耳机/蓝牙把声场宽度与感知响度补偿降到 60%，200 Hz 天花板 4→6 dB。新键 `aurora_precise`，默认关（+10 ms 延迟）。
 > **1.3.1 变更**：修复 Limiter 反射构造器签名错误——此前限幅器从未生效，所有设备实际跑的是 AOSP 默认的 −2 dBFS/10:1 砖墙，是破音/炸音的主要来源；新增设备适配包机制（服务器 devices.json → App 匹配写入 aurora_device_pack → 引擎逐 tick 消费，频点被拒自动回退 250–6.3 kHz）；设备档案回报 backend 写入状态。
 > **1.3.0 变更**：界面按 DESIGN.md 整体重做（token 体系、miuix 分组与原生滑杆、液态玻璃只留在 Dock），新增声场宽度与感知响度两个参数、滑杆「恢复默认」、小屏紧凑模式；旧 Magisk 路线与 20 段 GEQ 描述均为历史。本文件里凡写「250–6300 Hz」的段落，频点以代码 AudioEq.BAND_HZ 为准。
@@ -14,7 +15,7 @@
 把手机听感变成可编程的东西：不动原厂 `/odm` 配置、不重启 `audioserver`、不替换系统文件，只在每条播放链路的末端叠加一条自己可控的曲线，关掉即回原厂。
 
 - 目标设备与基线：Xiaomi 17 Pro（`pandora` / `25098PN5AC`），澎湃 OS 4.0（Android 17），固件 `OS4.0.6.0.XBLCNXM`（证据：README.md — "只在小米 17 Pro（`pandora` / `25098PN5AC`，澎湃 OS 4.0，Android 17）上验证过"）。
-- 频段与量纲：**六段**，250 / 500 / 1000 / 2000 / 4000 / 6300 Hz，dB 直接量纲，单段限幅 ±12 dB（证据：AudioEq.java — `BAND_HZ = {250f, 500f, 1000f, 2000f, 4000f, 6300f}`、`MAX_DB = 12f`）。
+- 频段与量纲：**六段**，80 / 200 / 500 / 1500 / 4000 / 10000 Hz，dB 直接量纲，单段限幅 ±12 dB（证据：AudioEq.java — `BAND_HZ = {80f, 200f, 500f, 1500f, 4000f, 10000f}`、`MAX_DB = 12f`）。
 - 频段为什么只有六段：手机扬声器只在约 300 Hz–6 kHz 有效还原，往 47 Hz 或 12 kHz 堆增益曲线好看但听不出来（证据：README.md — "只做 250 Hz 到 6.3 kHz 这六段，是因为实测手机扬声器只在这段里能有效还原"）。
 - 明确不碰的东西：`/odm/etc/dolby/*.xml`、`persist.vendor.audio.*` 属性、`audioserver` 进程、任何系统文件（证据：README.md — "不写 `/odm` 里的 Dolby 配置，不重启 `audioserver`，不替换任何系统文件"）。
 
@@ -83,7 +84,8 @@ App 会话  ──▶  系统混音  ──▶  AURORA（DynamicsProcessing preE
 - 量纲：曲线在 `Settings` 里按**十分之一 dB 的整数**存取（`aurora_geq = "110,90,-30,..."`），避免浮点在字符串往返中失真；回执 `_bands` 同样是十分之一 dB（证据：AuroraEngine.java — `parseCurve` 与 `join(float[])`）。
 
 **`AudioEq` 的反射封装**：`resolve()` 一次性拿齐 `DynamicsProcessing`、`DynamicsProcessing$EqBand` 的构造器与 `setPreEqBandAllChannelsTo` / `setEnabled` / `hasControl` / `release`，失败缓存 `resolveError` 不重复抛。`open(session)` 拒绝 `session <= 0`，构造 `DynamicsProcessing(0, session)`，从 `getPreEqByChannelIndex(0).getBandCount()` 读真实段数，`hasControl()` 为真且段数大于 0 才算成功。`apply()` 只写前 `min(真实段数, 6, 增益数组长度)` 段，多出来的段**故意不动**——默认平直，若全停到最后一个频点会叠出一堆本不想要的滤波器（证据：AudioEq.java — "Surplus bands are left untouched"）。
-- Limiter 接在链路最后一级：阈值 −1 dBFS、attack 5 ms、release 60 ms、ratio 10，只压会削顶的峰。它单独解析，取不到就不启用，绝不让整条 EQ 失效（证据：AudioEq.java — `enableLimiter()`、`setLimiterAllChannelsTo`）。
+- Limiter 接在链路最后一级：阈值 −6 dB、attack 5 ms、release 80 ms、ratio 4（1.4.1 从 6:1 放宽，曲线写链前已把最响段归并到 +6 dB，limiter 只抓峰），只压会削顶的峰。它单独解析，取不到就不启用，绝不让整条 EQ 失效（证据：AudioEq.java — `enableLimiter()`、`setLimiterAllChannelsTo`、`AuroraEngine.DEFAULT_LIMITER`）。
+- MBC（多段动态压缩）1.4.1 起六段整表写出：只有 120 Hz（2:1）与 350 Hz（1.4:1）两段在压，其余四段 ratio=1 直通；attack/release 单位是毫秒，低频两段用 20/250 与 25/300（证据：AudioEq.java — `MBC_CUTOFF_HZ`、`MBC_RATIO`、`MBC_ATTACK_MS`、`MBC_RELEASE_MS`、`enableBaseCompression()`）。
 
 **`Presets` 九套曲线**：`KEYS`/`NAMES`/`NOTES` 三组元数据 + `CURVES` 二维数组（9 × 6）。设计约束写在注释里：每套至少有一个频段相对平直偏 ≥5 dB，两两之间至少一处差 ≥4 dB，保证切换能听出来。原厂平直一行全 0。
 
@@ -140,7 +142,7 @@ stage 语义（证据：DeviceProfile.kt — `stageLabel()`）：`0` 链路可�
 14. **用户曲线单独存一份**。`aurora_geq_saved` 与 `aurora_geq` 分开，切预设清空当前曲线但不丢用户手调的曲线。
 15. **状态回执按签名去重**。`report()` 先把 state+message+bands+applied+sessions+stages 拼成签名，与上次相同就直接返回，避免每 2 秒往 `Settings` 里写一遍同样的东西。`stages`（limiter/mbc/loudness/bands 的实际结果）必须进签名，否则限幅器某一刻掉线不会触发写入，问题正好被去重掩盖。
 16. **首建之后只改参数，不建了再拆**。旧实现第一拍建效果器、第二拍 `close()` 后重建，为的是躲开 MiSound 重建效果链，代价是每个新音轨 release 一次，听感就是换歌/刷短视频时的断音。现在改为 `registerAudioPlaybackCallback` 驱动：回调在音轨建立后才触发，第一次看到就 `open()`，全程只 open 一次。
-17. **配置写入合批 150 ms**。保存一次设置要连写四个 `aurora_*` 键，逐条触发 tick 会让引擎读到半更新配置、连发几条中间曲线。观察者改为 `postDelayed(TICK, 150)`，合并成一次。
+17. **配置写入合批 60 ms**。保存一次设置要连写四个 `aurora_*` 键，逐条触发 tick 会让引擎读到半更新配置、连发几条中间曲线。`registerAudioPlaybackCallback` 的回调里先 `removeCallbacks` 再 `postDelayed(PLAYBACK_DEBOUNCE_MS=60)`，合并成一次。
 18. **削顶用 limiter 解决，不靠继续降增益**。降峰值会牺牲预设差异；limiter 只在越界时压峰，既保住曲线形状又不再数字削顶，同时把"开沉浸声有杂音"这条路一并治了。
 
 ## 5. 踩过的坑
@@ -172,7 +174,7 @@ stage 语义（证据：DeviceProfile.kt — `stageLabel()`）：`0` 链路可�
 1. **真机听感复核**。九套预设 + 本轮三项修复（沉浸声杂音、刷视频断音、切预设抖动）都要上机确认；仓库里没有听感复核记录。
 2. **起播瞬间的空窗**。旧版靠 2 s 轮询，新会话最多等一拍才有 EQ；现已改用 `registerAudioPlaybackCallback`（60 ms 去抖），空窗缩短到几十毫秒，尚未上机复核听感。
 3. **非小米机型适配**。兼容路径只有 probe 的六个检查点，没有针对其它品牌音频链路的特判；`stage` 报回来之后如何映射成具体适配动作还没写。
-4. **limiter 参数待真机校准**。阈值 −1 dBFS、attack 5 ms、release 60 ms、ratio 10 是保守起点；若低频出现"抽吸感"，说明 release 偏长或 ratio 偏狠。
+4. **limiter 与 MBC 参数待真机校准**。当前 limiter 阈值 −6 dB、attack 5 ms、release 80 ms、ratio 4，MBC 低频 120 Hz 2:1 / 350 Hz 1.4:1；若低频出现"抽吸感"，说明 release 偏长或 ratio 偏狠；若切歌仍有一瞬冲击，先看诊断里的 `mbc` 是否报出真实段数。
 5. **回读校验只在支持的机型上生效**。`apply()` 之后用 `getPreEqBandByChannelIndex` + `EqBand.getGain()` 回读（容差 0.6 dB），反射拿不到时静默跳过，因此"verify"缺省不代表写入正确。
 6. **构建脚本硬编码版本号**。`build.sh` 的产物名与 `app/build.gradle.kts` 的 `versionCode`/`versionName` 要手改三处，1.2.1 已同步，但仍是隐患。
 7. **签名口令明文**在 `app/build.gradle.kts`（`out/aurora-observer.jks` 亦在同处）。自用无妨，仓库若转公开值得改成从 `local.properties` 读。

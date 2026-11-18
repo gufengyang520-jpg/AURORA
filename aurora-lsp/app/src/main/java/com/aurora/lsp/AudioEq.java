@@ -29,8 +29,25 @@ public final class AudioEq {
 
     /** Custom architecture: 0 = {@code VARIANT_FAVOR_FREQUENCY_RESOLUTION}. */
     static final int ARCH_VARIANT = 0;
-    /** MBC band count; only band 0 is written, the rest stay at ratio 1 (no compression). */
+    /** MBC band count. */
     static final int MBC_BANDS = 6;
+    /**
+     * Upper cutoff of each MBC band, in Hz: 0-120, 120-350, 350-900, 900-2.5k, 2.5-6.5k, 6.5-16k.
+     *
+     * <p>These are deliberately the speaker's problem ranges, not a copy of the 20 Hz-20 kHz
+     * default spread: only the first two bands do anything, and they are the ones a phone driver
+     * cannot render - the sub-bass it turns into excursion and heat, and the 120-350 Hz boxiness
+     * that makes everything sound cupped.
+     */
+    static final float[] MBC_CUTOFF_HZ = {120f, 350f, 900f, 2500f, 6500f, 16000f};
+    /** Per-band compression ratio. 1:1 means pass through, which is what bands 2-5 do. */
+    static final float[] MBC_RATIO = {2.0f, 1.4f, 1f, 1f, 1f, 1f};
+    static final float[] MBC_THRESHOLD_DB = {-24f, -30f, -45f, -45f, -45f, -45f};
+    /** Milliseconds, the unit DynamicsProcessing documents for MbcBand attack and release. */
+    static final float[] MBC_ATTACK_MS = {20f, 25f, 3f, 3f, 3f, 3f};
+    static final float[] MBC_RELEASE_MS = {250f, 300f, 80f, 80f, 80f, 80f};
+    /** Soft knee, dB: the curve bends into the ratio instead of cornering into it. */
+    private static final float MBC_KNEE_DB = 6f;
     /** Platform default pre-EQ band count, and the count the six-point curve is authored in. */
     static final int DEFAULT_BANDS = 6;
     /**
@@ -714,13 +731,31 @@ public final class AudioEq {
             stage("mbc", "skip");
             return;
         }
-        try {
-            Object band = mbcBandCtor.newInstance(
-                    true, 120f, 0.020f, 0.250f, 2.0f, -24f, 6f, -60f, 1.0f, 0f, 0f);
-            setMbcBandAll.invoke(effect, 0, band);
+        int written = 0;
+        String lastFailure = null;
+        for (int i = 0; i < MBC_CUTOFF_HZ.length; i++) {
+            try {
+                // attack/release are milliseconds. 0.02 / 0.25 were seconds in a millisecond
+                // field: an instant attack with an instant release is not a compressor, it is a
+                // waveshaper bolted onto the bass, and it is one of the reasons the low end
+                // pumped instead of sitting still.
+                Object band = mbcBandCtor.newInstance(true, MBC_CUTOFF_HZ[i], MBC_ATTACK_MS[i],
+                        MBC_RELEASE_MS[i], MBC_RATIO[i], MBC_THRESHOLD_DB[i], MBC_KNEE_DB,
+                        -90f, 1.0f, 0f, 0f);
+                setMbcBandAll.invoke(effect, i, band);
+                written++;
+            } catch (Throwable error) {
+                lastFailure = "band " + i + ": " + describe(error);
+            }
+        }
+        // Report how many bands really landed: lenient audio servers accept the first band and
+        // then reject the rest, and "ok" would hide a chain that still runs on AOSP defaults.
+        if (written == MBC_CUTOFF_HZ.length) {
             stage("mbc", "ok");
-        } catch (Throwable error) {
-            stage("mbc", "fail:" + describe(error));
+        } else if (written > 0) {
+            stage("mbc", written + "/" + MBC_CUTOFF_HZ.length);
+        } else {
+            stage("mbc", "fail:" + lastFailure);
         }
     }
 
