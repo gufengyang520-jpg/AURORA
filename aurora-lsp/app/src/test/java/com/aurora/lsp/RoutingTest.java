@@ -149,12 +149,16 @@ public class RoutingTest {
     }
 
     @Test
-    public void aHeadphoneMayUseMoreAtTwoHundred() {
+    public void theMergeCeilingBindsBothRoutesAtTwoHundred() {
+        // The peak merge now lands the loudest band at PEAK_MERGE_DB (+4) before the per-band cap
+        // runs, so the headphone-only 6 dB ceiling at 200 Hz can no longer bind: with a single loud
+        // band, both routes converge on the merge ceiling. The 6 dB entry in HEADPHONE_BOOST_BY_BAND
+        // is kept for packs that raise PEAK_MERGE_DB, but stock tuning no longer reaches it.
         AuroraEngine.Config c = config();
         c.userCurve = new float[]{0f, 8f, 0f, 0f, 0f, 0f};
         float speaker = AuroraEngine.buildGains(c, new AuroraEngine.SessionInfo(1, -1, -1, null), 100)[1];
         float headset = AuroraEngine.buildGains(c, route(HEADSET), 100)[1];
-        assertEquals("a phone speaker stops at 4 dB", 4f, speaker, 0.01f);
-        assertEquals("a headphone may reach 6 dB", 6f, headset, 0.01f);
+        assertEquals("the phone speaker is held at the merge ceiling", 4f, speaker, 0.01f);
+        assertEquals("the headphone is also held at the merge ceiling now", 4f, headset, 0.01f);
     }
 }

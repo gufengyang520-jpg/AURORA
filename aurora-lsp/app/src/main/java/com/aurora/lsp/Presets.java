@@ -43,7 +43,8 @@ public final class Presets {
      * dB per band, aligned with {@link AudioEq#BAND_HZ}.
      *
      * <p>Written to be told apart. The first table only differed in the bass shelf, and once the
-     * engine folded every peak down to +6 dB most pairs landed within 2 dB of each other - nine
+     * engine folded every peak down to the merge ceiling (+4 dB) most pairs landed within 2 dB of
+     * each other - nine
      * names, five sounds. These keep a distinct silhouette per preset: where the weight sits, where
      * the cut is, and how far the top opens. Any two curves are at least ~2.4 dB apart on average
      * (flat vs natural, deliberately, since one is the "off" shape), the rest 4.9 dB and more.

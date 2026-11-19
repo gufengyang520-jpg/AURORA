@@ -90,6 +90,10 @@ class AuroraState(private val context: Context) {
     var adapt by mutableStateOf("")
         private set
 
+    /** Limiter trip headroom the engine reports back ("thr=.. peak=.. trip=..dBFS"). */
+    var limiter by mutableStateOf("")
+        private set
+
     /** Name of the device pack currently stored, read straight from Settings (no root needed). */
     var packName by mutableStateOf<String?>(null)
         private set
@@ -129,6 +133,7 @@ class AuroraState(private val context: Context) {
         val bandHzRaw: String?,
         val adaptRaw: String?,
         val packRaw: String?,
+        val limiterRaw: String?,
         val device: DeviceProfile
     )
 
@@ -167,6 +172,7 @@ class AuroraState(private val context: Context) {
             bandHzRaw = read(AuroraEngine.R_BANDHZ),
             adaptRaw = read(AuroraEngine.R_ADAPT),
             packRaw = read(AuroraEngine.K_PACK),
+            limiterRaw = read(AuroraEngine.R_LIMITER),
             device = DeviceProfile.read(resolver2)
         )
     }
@@ -208,6 +214,7 @@ class AuroraState(private val context: Context) {
         bypass = raw.bypassRaw?.toIntOrNull() == 1
         engineBandHz = parseHz(raw.bandHzRaw)
         adapt = raw.adaptRaw.orEmpty().let { if (it == "null") "" else it }
+        limiter = raw.limiterRaw.orEmpty().let { if (it == "null") "" else it }
         packName = raw.packRaw
             ?.takeIf { it.isNotBlank() && it != "null" }
             ?.let { runCatching { JSONObject(it).optString("name") }.getOrNull() }

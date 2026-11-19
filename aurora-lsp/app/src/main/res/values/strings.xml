@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AURORA</string>
+    <string name="tile_bypass_label">AURORA 原声对比</string>
+    <string name="tile_bypass">AURORA %1$s</string>
+    <string name="tile_bypass_failed">AURORA 切换失败（无 root？）</string>
 </resources>

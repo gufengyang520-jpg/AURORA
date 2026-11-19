@@ -150,9 +150,9 @@ public class GainsTest {
 
     @Test
     public void boostCeilingIsPerBand() {
-        // 200 Hz is the one band whose ceiling sits below the preamp limit, so it is the only one
-        // a test can observe. The 8 dB ceilings on 80 Hz / 1.5 k / 4 k / 10 k cannot bind: the +6
-        // dB preamp has already pulled those bands down to 6 before the cap is consulted.
+        // 200 Hz is the one band whose ceiling sits below the preamp merge ceiling, so it is the
+        // only one a test can observe. The 8 dB ceilings on 80 Hz / 1.5 k / 4 k / 10 k cannot bind:
+        // the +4 dB preamp merge has already pulled those bands down to 4 before the cap is consulted.
         AuroraEngine.Config muddy = config();
         muddy.userCurve = new float[]{0, 6, 0, 0, 0, 0};
         assertEquals("the 200 Hz ceiling is 4 dB", 4f,
@@ -160,12 +160,13 @@ public class GainsTest {
     }
 
     @Test
-    public void preampHoldsTheLoudestBandAtSix() {
-        // A single band asking for +11 leaves the preamp 5 dB of headroom to give back; the result
-        // is 6, not 11 and not the band's own 8 dB ceiling.
+    public void preampHoldsTheLoudestBandAtTheMergeCeiling() {
+        // A single band asking for +11 leaves the preamp headroom to give back; the merge ceiling
+        // is PEAK_MERGE_DB (+4), which is 3 dB under the limiter threshold of -6 dBFS, not 11 and
+        // not the band's own 8 dB ceiling.
         AuroraEngine.Config c = config();
         c.userCurve = new float[]{0, 0, 0, 11, 0, 0};
-        assertEquals("the preamp, not the band ceiling, is what binds here", 6f,
+        assertEquals("the preamp merge ceiling, not the band ceiling, is what binds here", 4f,
                 AuroraEngine.buildGains(c, speaker(), 100)[3], 0.01f);
     }
 

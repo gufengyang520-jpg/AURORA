@@ -39,14 +39,14 @@ public class CurveTest {
     @Test
     public void peakIsCappedNotOvershot() {
         // 80 Hz asks for +10. The preamp shifts the whole curve down until its loudest band sits at
-        // +6, so the result is +6, not +10. This used to assert +4 because the 80 Hz band had its
-        // own 4 dB ceiling; that ceiling is 8 dB now, so the preamp is what does the work here.
+        // the merge ceiling PEAK_MERGE_DB (+4), so the result is +4, not +10. The ceiling is 3 dB
+        // under the limiter threshold of -6 dBFS, which is the headroom the limiter needs.
         float[] out = AuroraEngine.buildGains(
                 config(new float[]{10, 8, 2, -3, -9, -11}, 100), speaker(), 100);
 
-        assertEquals("the preamp must pull the loudest band down to +6", 6f, out[0], 0.01f);
+        assertEquals("the preamp must pull the loudest band down to the merge ceiling", 4f, out[0], 0.01f);
         for (float gain : out) {
-            assertTrue("no band may sit above the preamp ceiling", gain <= 6.01f);
+            assertTrue("no band may sit above the merge ceiling", gain <= 4.01f);
         }
 
         // Shifting the whole curve is what keeps the preset's shape: the gaps between bands are the

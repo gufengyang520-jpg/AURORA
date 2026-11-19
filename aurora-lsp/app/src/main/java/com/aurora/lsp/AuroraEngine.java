@@ -70,6 +70,8 @@ public final class AuroraEngine {
     public static final String R_BANDHZ = "aurora_backend_bandhz";
     /** "pack:<name>", "fallback", or both, when the device runs adapted settings. */
     public static final String R_ADAPT = "aurora_backend_adapt";
+    /** Limiter headroom diagnostics: threshold, curve peak and the source level that trips it. */
+    public static final String R_LIMITER = "aurora_backend_limiter";
     /**
      * Which stages the effect chain really has: "bands=6/6 limiter=ok mbc=ok loudness=ok".
      *
@@ -125,6 +127,13 @@ public final class AuroraEngine {
     private static final float[] HEADPHONE_BOOST_BY_BAND = {8f, 6f, 6f, 8f, 8f, 8f};
 
     /**
+     * The loudest band is trimmed to this ceiling after routing compensation, leaving headroom
+     * between the curve's peak and the limiter threshold so the limiter only catches true peaks
+     * instead of riding the whole mix. +6 dB used to sit the peak right on the default threshold.
+     */
+    static final float PEAK_MERGE_DB = 4f;
+
+    /**
      * Pre-1.3.1 the limiter constructor lookup never matched, so the engine ran the AOSP default
      * brickwall (-2 dBFS, 10:1, 1 ms attack) - the artifacts reported as 破音/炸音. These gentler
      * defaults are what actually lands now; device packs override them per model.
@@ -133,8 +142,9 @@ public final class AuroraEngine {
             new AudioEq.LimiterConfig(-6f, 4f, 5f, 80f);
 
     /*
-     * Why 4:1 and not 6:1. The preamp already holds the loudest band at +6 dB, so the limiter's
-     * job here is to catch peaks, not to level the mix. At 6:1 every kick and every bass note that
+     * Why 4:1 and not 6:1. The preamp already holds the loudest band at +4 dB (PEAK_MERGE_DB),
+     * so the limiter's job is to catch peaks, not to level the mix. At 6:1 every kick and every
+     * bass note that
      * crossed the threshold lost most of its attack, which is heard as a flat, tired low end and
      * as the gain envelope moving under sustained bass. 4:1 still lands 12 dB over threshold at
      * -3 dBFS, so the speaker is no less protected; it just sounds less squashed on the way there.
@@ -276,7 +286,6 @@ public final class AuroraEngine {
         long now = android.os.SystemClock.elapsedRealtime();
         int volume = musicVolumePercent();
 
-        int skipped = 0;
         for (Map.Entry<Integer, SessionInfo> entry : sessions.entrySet()) {
             int session = entry.getKey();
             SessionInfo info = entry.getValue();
@@ -294,7 +303,13 @@ public final class AuroraEngine {
             // and the user's sliders sit on top of that rather than replacing it.
             float spreadTotal = totalSpread(config, info);
             int loudnessMb = totalLoudnessMb(config, info);
-            int bands = config.preEqBands();
+            // Precise mode is resolved per session: games keep the ten-band chain's extra 10 ms
+            // off the latency-sensitive path, while music still gets it. The chain architecture
+            // (band count + frame) must follow the same flag, or a game session would be opened
+            // ten-band and then have six-band gains written into it.
+            boolean sessionPrecise = config.precise && !isLatencySensitive(info.usage);
+            int bands = sessionPrecise ? AudioEq.PRECISE_BANDS : AudioEq.DEFAULT_BANDS;
+            float frameMs = sessionPrecise ? AudioEq.PRECISE_FRAME_MS : 0f;
             float[] writeGains = AudioEq.expandGains(gains, table, bands);
             float[] writeSpread = spread == null ? null : AudioEq.expandGains(spread, table, bands);
             float[] writeTable = AudioEq.expandTable(table, bands);
@@ -303,7 +318,7 @@ public final class AuroraEngine {
 
             AudioEq eq = effects.get(session);
             if (eq != null && (!eq.isOpen()
-                    || !eq.matchesArchitecture(config.preEqBands(), config.frameMs()))) {
+                    || !eq.matchesArchitecture(bands, frameMs))) {
                 // Two ways an effect outlives its usefulness: the session dropped its chain (a
                 // track torn down without a playback callback leaves a handle whose writes all
                 // fail), or the band count changed - which cannot be altered on a live chain, so
@@ -313,14 +328,15 @@ public final class AuroraEngine {
                 eq = null;
             }
             if (eq == null) {
-                if (effects.size() >= MAX_SESSIONS) {
-                    skipped++;
-                    continue;
-                }
+                // The slot table is full: evict the least-recently-seen session instead of
+                // skipping the new one. Skipping used to be the behaviour, and it left the
+                // newest track playing unprocessed whenever fast scrubbing outran the stale
+                // timeout - the ninth session got nothing while eight dying sessions held slots.
+                evictLru();
                 eq = new AudioEq();
                 // open() releases the effect itself on every failure path, so a session that
                 // cannot be controlled does not keep an unconfigured chain bound to it.
-                if (!eq.open(session, config.limiter, config.preEqBands(), config.frameMs())) {
+                if (!eq.open(session, config.limiter, bands, frameMs)) {
                     // A session that keeps refusing to open is retried on every tick and on every
                     // playback callback. That is the right thing to do (the chain is rebuilt when
                     // the track restarts), but it would also overwrite the reported reason 30
@@ -365,9 +381,10 @@ public final class AuroraEngine {
         }
 
         releaseStale(now);
+        String limiter = limiterHeadroom(config, lastGains);
         if (applied == 0 && !failure.isEmpty()) {
             report("error", "写入失败：" + failure, lastGains, 0, tableFor(config),
-                    adaptString(config), stages);
+                    adaptString(config), stages, limiter);
             return;
         }
         String message = testing
@@ -377,9 +394,37 @@ public final class AuroraEngine {
         if (config.packName != null) message += " 设备适配：" + config.packName + "。";
         if (config.precise) message += " 精确模式：10 段 / 20 ms 帧。";
         if (!failure.isEmpty()) message += " 部分会话失败：" + failure;
-        if (skipped > 0) message += " 会话数已达上限，跳过 " + skipped + " 个。";
         report(testing ? "selftest" : "active", message, lastGains, applied,
-                tableFor(config), adaptString(config), stages);
+                tableFor(config), adaptString(config), stages, limiter);
+    }
+
+    /**
+     * Headroom between the curve's peak and the limiter threshold, reported as the source level
+     * that trips the limiter. AOSP exposes no gain-reduction meter, so a true trigger count is
+     * impossible to read; this is the honest next best thing - it tells the user how much headroom
+     * the current chain actually has before the limiter starts squeezing.
+     *
+     * <p>{@code peak} is the curve's own loudest gain (0 for a flat curve), not the merge ceiling:
+     * a quiet curve really does trip the limiter 2 dB later than a loud one, and the report should
+     * say so rather than pretending every curve sits on the ceiling.
+     */
+    static String limiterHeadroom(Config config, float[] gains) {
+        float peak = 0f;
+        if (gains != null) {
+            for (float gain : gains) peak = Math.max(peak, gain);
+        }
+        float threshold = config.limiter == null ? DEFAULT_LIMITER.thresholdDb
+                : config.limiter.thresholdDb;
+        float trip = threshold - peak;
+        return "thr=" + round1(threshold) + " peak=" + round1(peak)
+                + " trip=" + round1(trip) + "dBFS";
+    }
+
+    private static String round1(float value) {
+        int tenths = Math.round(value * 10);
+        String sign = tenths < 0 ? "-" : "+";
+        int abs = Math.abs(tenths);
+        return sign + (abs / 10) + "." + (abs % 10);
     }
 
     /**
@@ -616,6 +661,29 @@ public final class AuroraEngine {
         }
     }
 
+    /**
+     * Frees one slot by closing the effect whose session has gone longest without being seen.
+     *
+     * <p>This is the stall-buster for fast scrubbing: the stale timeout would hold eight dying
+     * sessions for up to ten seconds while the ninth track plays raw. Evicting the oldest means
+     * the newest track always gets a chain; the victim is re-opened a tick later if it is still
+     * playing, which is cheaper than the click of letting a real session go unprocessed.
+     */
+    private void evictLru() {
+        int victim = -1;
+        long oldest = Long.MAX_VALUE;
+        for (Map.Entry<Integer, Long> entry : lastSeen.entrySet()) {
+            if (entry.getValue() < oldest) {
+                oldest = entry.getValue();
+                victim = entry.getKey();
+            }
+        }
+        if (victim < 0) return;
+        lastSeen.remove(victim);
+        AudioEq eq = effects.remove(victim);
+        if (eq != null) eq.close();
+    }
+
     private void releaseAll() {
         for (AudioEq eq : effects.values()) eq.close();
         effects.clear();
@@ -665,6 +733,15 @@ public final class AuroraEngine {
     static boolean isCallUsage(int usage) {
         return usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION
                 || usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING;
+    }
+
+    /**
+     * Streams where the extra 10 ms of precise mode is felt, not merely heard: games need the
+     * frame rate, not a slightly better bass contour. Precise mode is quietly disabled for them
+     * per session, so the user's global switch stays untouched for music.
+     */
+    static boolean isLatencySensitive(int usage) {
+        return usage == android.media.AudioAttributes.USAGE_GAME;
     }
 
     /** The stream the app declared, or -1 when the platform did not say. */
@@ -786,8 +863,8 @@ public final class AuroraEngine {
 
         float loudest = -AudioEq.MAX_DB;
         for (int i = 0; i < AudioEq.BANDS; i++) loudest = Math.max(loudest, out[i]);
-        if (loudest > 6f) {
-            float shift = loudest - 6f;
+        if (loudest > PEAK_MERGE_DB) {
+            float shift = loudest - PEAK_MERGE_DB;
             for (int i = 0; i < AudioEq.BANDS; i++) out[i] -= shift;
         }
 
@@ -888,20 +965,27 @@ public final class AuroraEngine {
 
     private void report(String state, String message, float[] gains, int applied,
                         float[] table, String adapt) {
-        report(state, message, gains, applied, table, adapt, "");
+        report(state, message, gains, applied, table, adapt, "", "");
     }
 
     private void report(String state, String message, float[] gains, int applied,
                         float[] table, String adapt, String stages) {
+        report(state, message, gains, applied, table, adapt, stages, "");
+    }
+
+    private void report(String state, String message, float[] gains, int applied,
+                        float[] table, String adapt, String stages, String limiter) {
         String bands = gains == null ? "" : join(gains);
         String sessions = join(effects.keySet());
         String bandHz = table == null ? "" : join(table);
         String chain = stages == null ? "" : stages;
-        // The stages belong in the signature: a limiter that starts or stops landing changes
+        String limiterField = limiter == null ? "" : limiter;
+        // The stages and limiter headroom belong in the signature: a limiter that starts or stops
+        // landing, or a pack that moves the threshold without touching the band table, changes
         // nothing else in this tuple, and skipping the write would hide it until the next state
-        // change - exactly the silence this key exists to break.
+        // change - exactly the silence these keys exist to break.
         String signature = state + '|' + message + '|' + bands + '|' + applied + '|' + sessions
-                + '|' + chain;
+                + '|' + chain + '|' + limiterField;
         if (signature.equals(lastSignature)) return;
         lastSignature = signature;
         try {
@@ -914,6 +998,7 @@ public final class AuroraEngine {
             Settings.Global.putString(resolver, R_BANDHZ, bandHz);
             Settings.Global.putString(resolver, R_ADAPT, adapt == null ? "" : adapt);
             Settings.Global.putString(resolver, R_STAGES, chain);
+            Settings.Global.putString(resolver, R_LIMITER, limiter == null ? "" : limiter);
             Settings.Global.putLong(resolver, R_UPDATED, System.currentTimeMillis());
             record(resolver, state, message);
         } catch (Throwable error) {
