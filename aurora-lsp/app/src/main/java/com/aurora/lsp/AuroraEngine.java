@@ -183,6 +183,8 @@ public final class AuroraEngine {
 
     /** Set once the default/pack table is rejected and the legacy table took over; cleared by reboot. */
     private boolean fallbackEngaged;
+    /** Music stream is at zero: the chain is released so no stage hisses through silence. */
+    private boolean muted;
     /** Cached parse of aurora_device_pack: JSON is only walked when the raw string changes. */
     private String lastPackRaw = "";
     private float[] packBandHz;
@@ -242,6 +244,7 @@ public final class AuroraEngine {
         // has to be gone, not merely flat - a flat curve still goes through the DSP and keeps its
         // latency and its limiter, which is exactly what the listener is trying to hear past.
         if (config.bypass) {
+            muted = false;
             releaseAll();
             report("bypass", "A/B 对比中：已听原声，松开即恢复。", null, 0);
             return;
@@ -252,10 +255,26 @@ public final class AuroraEngine {
             return;
         }
         if (!config.enabled) {
+            muted = false;
             releaseAll();
             report("disabled", "叠加已关闭，音频走原厂链路。", null, 0);
             return;
         }
+        // Mute outranks everything else: while the music stream sits at zero the effect chain must
+        // not run. The limiter and MBC stages are high-gain processors, and with no programme to
+        // hold down they amplify their own idle noise into an audible hiss - the "滋滋" heard when
+        // the user silences the stream but leaves a player running. Releasing here is cleaner than
+        // writing a mute curve, and the chain comes straight back on the next volume change.
+        int volume = musicVolumePercent();
+        if (volume <= 0) {
+            if (!muted) {
+                muted = true;
+                releaseAll();
+                report("muted", "媒体音量已静音，效果链已释放；恢复音量自动挂回。", null, 0);
+            }
+            return;
+        }
+        muted = false;
         Map<Integer, SessionInfo> sessions = activeSessions();
         // A call that starts while music is playing ends the music session, but not before the
         // next scan: drop the effect the moment the route has been claimed by a call instead of
@@ -284,7 +303,6 @@ public final class AuroraEngine {
         boolean fellBackThisTick = false;
 
         long now = android.os.SystemClock.elapsedRealtime();
-        int volume = musicVolumePercent();
 
         for (Map.Entry<Integer, SessionInfo> entry : sessions.entrySet()) {
             int session = entry.getKey();

@@ -550,6 +550,7 @@ private fun StatusStrip(state: AuroraState) {
         "active" -> { label = "正在生效"; tone = colors.primary }
         "selftest" -> { label = "自检中"; tone = colors.primary }
         "idle" -> { label = "等待播放"; tone = colors.onSurfaceVariantSummary }
+        "muted" -> { label = "媒体已静音"; tone = colors.onSurfaceVariantSummary }
         "disabled" -> { label = "已关闭"; tone = colors.onSurfaceVariantSummary }
         "panic" -> { label = "已紧急停用"; tone = colors.error }
         else -> {
